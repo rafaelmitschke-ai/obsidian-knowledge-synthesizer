@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Aetheris Web Clipper",
+  "version": "1.0",
+  "description": "Fügt YouTube-Videos und Artikel direkt zu deiner Aetheris Warteschlange hinzu.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "http://*/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

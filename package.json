@@ -1,0 +1,15 @@
+{
+  "name": "aetheris-root",
+  "version": "1.0.0",
+  "description": "Obsidian Knowledge Synthesizer Root Workspace",
+  "private": true,
+  "scripts": {
+    "install:backend": "npm install --prefix backend",
+    "install:frontend": "npm install --prefix frontend",
+    "install:all": "npm install && npm run install:backend && npm run install:frontend",
+    "dev": "concurrently \"npm run start --prefix backend\" \"npm run dev --prefix frontend\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
