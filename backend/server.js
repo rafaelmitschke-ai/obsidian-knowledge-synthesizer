@@ -615,9 +615,113 @@ async function deleteFromGeminiFileApi(apiKey, fileName) {
   }
 }
 
+// Helper functions for multi-provider LLM support
+async function transcribeAudioWithWhisper(fileBuffer, mimeType, fileName, apiKey) {
+  const formData = new FormData();
+  const blob = new Blob([fileBuffer], { type: mimeType });
+  formData.append('file', blob, fileName);
+  formData.append('model', 'whisper-1');
+
+  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: formData
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || 'Whisper transcription failed');
+  }
+  return data.text;
+}
+
+async function callOpenAiChat(apiKey, model, messages) {
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: messages,
+      temperature: 0.3
+    })
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || 'OpenAI API error');
+  }
+  return data.choices[0].message.content;
+}
+
+async function callAnthropicChat(apiKey, model, messages) {
+  // Extract system prompt if any to pass as top level system parameter
+  let systemPrompt = '';
+  const chatMessages = messages.filter(m => {
+    if (m.role === 'system') {
+      systemPrompt = m.content;
+      return false;
+    }
+    return true;
+  });
+
+  const body = {
+    model: model,
+    messages: chatMessages,
+    max_tokens: 4096,
+    temperature: 0.3
+  };
+  if (systemPrompt) {
+    body.system = systemPrompt;
+  }
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01'
+    },
+    body: JSON.stringify(body)
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || 'Anthropic API error');
+  }
+  return data.content[0].text;
+}
+
+async function callOpenRouterChat(apiKey, model, messages) {
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+      'HTTP-Referer': 'https://github.com/rafaelmitschke-ai/obsidian-knowledge-synthesizer',
+      'X-Title': 'Aetheris'
+    },
+    body: JSON.stringify({
+      model: model,
+      messages: messages,
+      temperature: 0.3
+    })
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || 'OpenRouter API error');
+  }
+  return data.choices[0].message.content;
+}
+
 // 5. Podcast and general Audio Synthesis Endpoint
 app.post('/api/analyze-audio', async (req, res) => {
-  const { apiKey, localPath, audioUrl, prompt, model } = req.body;
+  const { apiKey, openaiApiKey, anthropicApiKey, openrouterApiKey, localPath, audioUrl, prompt, model } = req.body;
   
   let selectedModel = model || 'gemini-2.5-flash';
   if (selectedModel === 'gemini-1.5-flash') {
@@ -626,8 +730,16 @@ app.post('/api/analyze-audio', async (req, res) => {
     selectedModel = 'gemini-2.5-pro';
   }
 
-  if (!apiKey || (!localPath && !audioUrl) || !prompt) {
-    return res.status(400).json({ error: 'apiKey, prompt, and either localPath or audioUrl are required.' });
+  const isGemini = selectedModel.startsWith('gemini-');
+
+  if (isGemini && !apiKey) {
+    return res.status(400).json({ error: 'Gemini API-Key ist erforderlich für Gemini-Modelle.' });
+  }
+  if (!isGemini && !openaiApiKey) {
+    return res.status(400).json({ error: 'Ein OpenAI API-Key wird benötigt, um Audios für Nicht-Gemini-Modelle via Whisper zu transkribieren.' });
+  }
+  if ((!localPath && !audioUrl) || !prompt) {
+    return res.status(400).json({ error: 'prompt and either localPath or audioUrl are required.' });
   }
 
   let uploadedFile = null;
@@ -654,6 +766,37 @@ app.post('/api/analyze-audio', async (req, res) => {
       fileBuffer = Buffer.from(await downloadRes.arrayBuffer());
       mimeType = downloadRes.headers.get('Content-Type') || getMimeType(audioUrl);
       originalName = audioUrl.split('/').pop() || 'audio_file';
+    }
+
+    if (!isGemini) {
+      console.log(`Transcribing audio via Whisper for non-Gemini model: ${selectedModel}...`);
+      const transcribedText = await transcribeAudioWithWhisper(fileBuffer, mimeType, originalName, openaiApiKey);
+      console.log(`Transcription complete. Characters: ${transcribedText.length}`);
+
+      const userMessageContent = `Hier ist das Transkript der Audiodatei:\n\n"""\n${transcribedText}\n"""\n\nBitte führe die Analyse und Synthese gemäß folgenden Anweisungen durch:\n\n${prompt}`;
+      
+      let answer;
+      if (selectedModel.startsWith('gpt-')) {
+        answer = await callOpenAiChat(openaiApiKey, selectedModel, [{ role: 'user', content: userMessageContent }]);
+      } else if (selectedModel.startsWith('claude-')) {
+        if (!anthropicApiKey) {
+          return res.status(400).json({ error: 'Ein Anthropic API-Key wird für Claude-Modelle benötigt.' });
+        }
+        answer = await callAnthropicChat(anthropicApiKey, selectedModel, [{ role: 'user', content: userMessageContent }]);
+      } else if (selectedModel.includes('/')) {
+        if (!openrouterApiKey) {
+          return res.status(400).json({ error: 'Ein OpenRouter API-Key wird für OpenRouter-Modelle benötigt.' });
+        }
+        answer = await callOpenRouterChat(openrouterApiKey, selectedModel, [{ role: 'user', content: userMessageContent }]);
+      } else {
+        throw new Error(`Unbekannter Modell-Typ: ${selectedModel}`);
+      }
+
+      return res.json({
+        success: true,
+        markdown: answer,
+        fileName: originalName
+      });
     }
 
     console.log(`Uploading ${originalName} (${(fileBuffer.length / (1024 * 1024)).toFixed(2)} MB) to Gemini File API...`);
@@ -775,6 +918,67 @@ app.post('/api/analyze-audio', async (req, res) => {
     if (uploadedFile && uploadedFile.name) {
       deleteFromGeminiFileApi(apiKey, uploadedFile.name);
     }
+  }
+});
+
+// 5b. Text-Only Synthesis Endpoint
+app.post('/api/synthesize-text', async (req, res) => {
+  const { apiKey, openaiApiKey, anthropicApiKey, openrouterApiKey, prompt, model } = req.body;
+
+  let selectedModel = model || 'gemini-2.5-flash';
+  if (selectedModel === 'gemini-1.5-flash') selectedModel = 'gemini-2.5-flash';
+  if (selectedModel === 'gemini-1.5-pro') selectedModel = 'gemini-2.5-pro';
+
+  const isGemini = selectedModel.startsWith('gemini-');
+
+  try {
+    let answer;
+
+    if (isGemini) {
+      if (!apiKey) {
+        return res.status(400).json({ error: 'Gemini API-Key ist erforderlich.' });
+      }
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${selectedModel}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.2,
+            responseMimeType: "application/json",
+            maxOutputTokens: 8192
+          }
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error?.message || 'Fehler beim Aufruf der Gemini API.');
+      }
+      answer = data.candidates[0].content.parts[0].text;
+    } else if (selectedModel.startsWith('gpt-')) {
+      if (!openaiApiKey) {
+        return res.status(400).json({ error: 'OpenAI API-Key ist erforderlich.' });
+      }
+      answer = await callOpenAiChat(openaiApiKey, selectedModel, [{ role: 'user', content: prompt }]);
+    } else if (selectedModel.startsWith('claude-')) {
+      if (!anthropicApiKey) {
+        return res.status(400).json({ error: 'Anthropic API-Key ist erforderlich.' });
+      }
+      answer = await callAnthropicChat(anthropicApiKey, selectedModel, [{ role: 'user', content: prompt }]);
+    } else if (selectedModel.includes('/')) {
+      if (!openrouterApiKey) {
+        return res.status(400).json({ error: 'OpenRouter API-Key ist erforderlich.' });
+      }
+      answer = await callOpenRouterChat(openrouterApiKey, selectedModel, [{ role: 'user', content: prompt }]);
+    } else {
+      throw new Error(`Unbekannter Modell-Typ: ${selectedModel}`);
+    }
+
+    return res.json({ success: true, text: answer });
+  } catch (error) {
+    console.error('Error in text synthesis:', error);
+    return res.status(500).json({ error: 'Fehler bei der Wissens-Synthese.', details: error.message });
   }
 });
 
@@ -1117,12 +1321,11 @@ app.post('/api/search', (req, res) => {
   }
 });
 
-// 6b. RAG Obsidian Copilot Endpoint (AI-Coupled Search)
 app.post('/api/copilot/search-ai', async (req, res) => {
-  const { vaultPath, folder, query, apiKey, model } = req.body;
+  const { vaultPath, folder, query, apiKey, openaiApiKey, anthropicApiKey, openrouterApiKey, model } = req.body;
 
-  if (!vaultPath || !query || !apiKey) {
-    return res.status(400).json({ error: 'vaultPath, query and apiKey are required.' });
+  if (!vaultPath || !query) {
+    return res.status(400).json({ error: 'vaultPath and query are required.' });
   }
 
   try {
@@ -1133,23 +1336,25 @@ app.post('/api/copilot/search-ai', async (req, res) => {
     let useSemantic = false;
     let embeddingsCache = { files: {} };
 
-    // 1. Try semantic embeddings sync
-    try {
-      if (fs.existsSync(targetFolder)) {
-        await syncEmbeddings(targetFolder, apiKey);
-        const cachePath = path.join(targetFolder, '.aetheris_embeddings.json');
-        if (fs.existsSync(cachePath)) {
-          embeddingsCache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-          useSemantic = Object.keys(embeddingsCache.files).length > 0;
+    // 1. Try semantic embeddings sync (only if Gemini apiKey is provided)
+    if (apiKey) {
+      try {
+        if (fs.existsSync(targetFolder)) {
+          await syncEmbeddings(targetFolder, apiKey);
+          const cachePath = path.join(targetFolder, '.aetheris_embeddings.json');
+          if (fs.existsSync(cachePath)) {
+            embeddingsCache = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
+            useSemantic = Object.keys(embeddingsCache.files).length > 0;
+          }
         }
+      } catch (err) {
+        console.warn('Semantische Suche fehlgeschlagen beim Synchronisieren, weiche auf TF-IDF aus:', err.message);
+        useSemantic = false;
       }
-    } catch (err) {
-      console.warn('Semantische Suche fehlgeschlagen beim Synchronisieren, weiche auf TF-IDF aus:', err.message);
-      useSemantic = false;
     }
 
     // 2. Perform search (Semantic or Fallback TF-IDF)
-    if (useSemantic) {
+    if (useSemantic && apiKey) {
       try {
         // Embed search query
         const embedUrl = `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${apiKey}`;
@@ -1237,32 +1442,53 @@ Frage des Benutzers: ${query}`;
     if (actualModel === 'gemini-1.5-flash') actualModel = 'gemini-2.5-flash';
     if (actualModel === 'gemini-1.5-pro') actualModel = 'gemini-2.5-pro';
 
-    // 5. Send request to Gemini API
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${actualModel}:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: systemPrompt }] }],
-        generationConfig: {
-          temperature: 0.3,
-          maxOutputTokens: 2048
-        }
-      })
-    });
+    const isGemini = actualModel.startsWith('gemini-');
+    let answer;
 
-    const data = await response.json();
+    if (isGemini) {
+      if (!apiKey) {
+        return res.status(400).json({ error: 'Gemini API-Key ist erforderlich für Gemini-Modelle.' });
+      }
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${actualModel}:generateContent?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: systemPrompt }] }],
+          generationConfig: {
+            temperature: 0.3,
+            maxOutputTokens: 2048
+          }
+        })
+      });
 
-    if (!response.ok) {
-      throw new Error(data.error?.message || 'Fehler beim Aufruf der Gemini API.');
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.error?.message || 'Fehler beim Aufruf der Gemini API.');
+      }
+      if (!data.candidates || data.candidates.length === 0) {
+        throw new Error('Es wurde keine Antwort von Gemini generiert.');
+      }
+      answer = data.candidates[0].content.parts[0].text;
+    } else if (actualModel.startsWith('gpt-')) {
+      if (!openaiApiKey) {
+        return res.status(400).json({ error: 'OpenAI API-Key ist erforderlich für OpenAI-Modelle.' });
+      }
+      answer = await callOpenAiChat(openaiApiKey, actualModel, [{ role: 'user', content: systemPrompt }]);
+    } else if (actualModel.startsWith('claude-')) {
+      if (!anthropicApiKey) {
+        return res.status(400).json({ error: 'Anthropic API-Key ist erforderlich für Claude-Modelle.' });
+      }
+      answer = await callAnthropicChat(anthropicApiKey, actualModel, [{ role: 'user', content: systemPrompt }]);
+    } else if (actualModel.includes('/')) {
+      if (!openrouterApiKey) {
+        return res.status(400).json({ error: 'OpenRouter API-Key ist erforderlich für OpenRouter-Modelle.' });
+      }
+      answer = await callOpenRouterChat(openrouterApiKey, actualModel, [{ role: 'user', content: systemPrompt }]);
+    } else {
+      throw new Error(`Unbekannter Modell-Typ: ${actualModel}`);
     }
 
-    if (!data.candidates || data.candidates.length === 0) {
-      throw new Error('Es wurde keine Antwort von Gemini generiert.');
-    }
-
-    const answer = data.candidates[0].content.parts[0].text;
     const sources = topDocs.map(d => ({ title: d.title, fileName: d.fileName, score: d.score }));
-
     return res.json({ success: true, answer, sources });
 
   } catch (error) {

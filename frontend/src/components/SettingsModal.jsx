@@ -27,6 +27,9 @@ export default function SettingsModal({ isOpen, onClose, onSave }) {
   
   // Settings state
   const [apiKey, setApiKey] = useState('');
+  const [openaiApiKey, setOpenaiApiKey] = useState('');
+  const [anthropicApiKey, setAnthropicApiKey] = useState('');
+  const [openrouterApiKey, setOpenrouterApiKey] = useState('');
   const [vaultPath, setVaultPath] = useState('');
   const [pdfPath, setPdfPath] = useState('');
   const [folder, setFolder] = useState('Aetheris');
@@ -40,6 +43,9 @@ export default function SettingsModal({ isOpen, onClose, onSave }) {
   
   // UI states
   const [showKey, setShowKey] = useState(false);
+  const [showOpenaiKey, setShowOpenaiKey] = useState(false);
+  const [showAnthropicKey, setShowAnthropicKey] = useState(false);
+  const [showOpenrouterKey, setShowOpenrouterKey] = useState(false);
   const [newRuleTag, setNewRuleTag] = useState('');
   const [newRuleFolder, setNewRuleFolder] = useState('');
  
@@ -47,6 +53,9 @@ export default function SettingsModal({ isOpen, onClose, onSave }) {
     if (isOpen) {
       // Load configurations from localStorage
       setApiKey(localStorage.getItem('aetheris_api_key') || '');
+      setOpenaiApiKey(localStorage.getItem('aetheris_openai_api_key') || '');
+      setAnthropicApiKey(localStorage.getItem('aetheris_anthropic_api_key') || '');
+      setOpenrouterApiKey(localStorage.getItem('aetheris_openrouter_api_key') || '');
       setVaultPath(localStorage.getItem('aetheris_vault_path') || '');
       setPdfPath(localStorage.getItem('aetheris_pdf_path') || '');
       setFolder(localStorage.getItem('aetheris_folder') || 'Aetheris');
@@ -69,6 +78,9 @@ export default function SettingsModal({ isOpen, onClose, onSave }) {
 
   const handleSave = () => {
     localStorage.setItem('aetheris_api_key', apiKey.trim());
+    localStorage.setItem('aetheris_openai_api_key', openaiApiKey.trim());
+    localStorage.setItem('aetheris_anthropic_api_key', anthropicApiKey.trim());
+    localStorage.setItem('aetheris_openrouter_api_key', openrouterApiKey.trim());
     localStorage.setItem('aetheris_vault_path', vaultPath.trim());
     localStorage.setItem('aetheris_pdf_path', pdfPath.trim());
     localStorage.setItem('aetheris_folder', folder.trim());
@@ -80,6 +92,9 @@ export default function SettingsModal({ isOpen, onClose, onSave }) {
 
     onSave({
       apiKey: apiKey.trim(),
+      openaiApiKey: openaiApiKey.trim(),
+      anthropicApiKey: anthropicApiKey.trim(),
+      openrouterApiKey: openrouterApiKey.trim(),
       vaultPath: vaultPath.trim(),
       pdfPath: pdfPath.trim(),
       folder: folder.trim(),
@@ -157,7 +172,7 @@ export default function SettingsModal({ isOpen, onClose, onSave }) {
 
         {/* Tab 1: General Settings */}
         {activeSubTab === 'general' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', maxHeight: '450px', overflowY: 'auto', paddingRight: '8px' }}>
             <div className="form-group">
               <label className="form-label">Gemini API Key</label>
               <div style={{ display: 'flex', gap: '8px' }}>
@@ -175,6 +190,69 @@ export default function SettingsModal({ isOpen, onClose, onSave }) {
                   style={{ padding: '0 16px', height: '48px' }}
                 >
                   {showKey ? 'Verbergen' : 'Anzeigen'}
+                </button>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">OpenAI API Key (für GPT-Modelle & Whisper)</label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type={showOpenaiKey ? 'text' : 'password'}
+                  className="text-input"
+                  style={{ flex: 1 }}
+                  placeholder="sk-..."
+                  value={openaiApiKey}
+                  onChange={(e) => setOpenaiApiKey(e.target.value)}
+                />
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={() => setShowOpenaiKey(!showOpenaiKey)}
+                  style={{ padding: '0 16px', height: '48px' }}
+                >
+                  {showOpenaiKey ? 'Verbergen' : 'Anzeigen'}
+                </button>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Anthropic API Key (für Claude)</label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type={showAnthropicKey ? 'text' : 'password'}
+                  className="text-input"
+                  style={{ flex: 1 }}
+                  placeholder="sk-ant-..."
+                  value={anthropicApiKey}
+                  onChange={(e) => setAnthropicApiKey(e.target.value)}
+                />
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={() => setShowAnthropicKey(!showAnthropicKey)}
+                  style={{ padding: '0 16px', height: '48px' }}
+                >
+                  {showAnthropicKey ? 'Verbergen' : 'Anzeigen'}
+                </button>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">OpenRouter API Key (für DeepSeek, Llama, Qwen)</label>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <input
+                  type={showOpenrouterKey ? 'text' : 'password'}
+                  className="text-input"
+                  style={{ flex: 1 }}
+                  placeholder="sk-or-..."
+                  value={openrouterApiKey}
+                  onChange={(e) => setOpenrouterApiKey(e.target.value)}
+                />
+                <button 
+                  className="btn btn-secondary" 
+                  onClick={() => setShowOpenrouterKey(!showOpenrouterKey)}
+                  style={{ padding: '0 16px', height: '48px' }}
+                >
+                  {showOpenrouterKey ? 'Verbergen' : 'Anzeigen'}
                 </button>
               </div>
             </div>
@@ -219,20 +297,33 @@ export default function SettingsModal({ isOpen, onClose, onSave }) {
             </div>
 
             <div className="form-group">
-              <label className="form-label">Gemini KI-Modell</label>
+              <label className="form-label">KI-Modell & Anbieter</label>
               <select 
                 className="text-input"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
                 style={{ height: '48px' }}
               >
-                <option value="gemini-2.5-flash">Gemini 2.5 Flash (Empfohlen - Extrem schnell & stabil)</option>
-                <option value="gemini-2.5-pro">Gemini 2.5 Pro (Hochpräzise & intelligent)</option>
-                <option value="gemini-3.5-flash">Gemini 3.5 Flash (Next-Gen Preview)</option>
-                <option value="gemini-2.0-flash">Gemini 2.0 Flash (Legacy)</option>
+                <optgroup label="Google Gemini (Natives Audio)">
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash (Empfohlen - Schnell & stabil)</option>
+                  <option value="gemini-2.5-pro">Gemini 2.5 Pro (Hochpräzise & intelligent)</option>
+                </optgroup>
+                <optgroup label="OpenAI (Whisper benötigt)">
+                  <option value="gpt-4o">GPT-4o (Sehr intelligent & ausgewogen)</option>
+                  <option value="gpt-4o-mini">GPT-4o-Mini (Schnell & kostengünstig)</option>
+                </optgroup>
+                <optgroup label="Anthropic Claude (Whisper benötigt)">
+                  <option value="claude-3-5-sonnet-latest">Claude 3.5 Sonnet (Herausragender deutscher Schreibstil)</option>
+                  <option value="claude-3-5-haiku-latest">Claude 3.5 Haiku (Schnell & effizient)</option>
+                </optgroup>
+                <optgroup label="OpenRouter (Whisper benötigt - DeepSeek & Open Source)">
+                  <option value="deepseek/deepseek-chat">DeepSeek V3 (Leistungsstark & preiswert)</option>
+                  <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B (Ausgewogenes Open Source Modell)</option>
+                  <option value="meta-llama/llama-3.1-405b-instruct">Llama 3.1 405B (Maximales Open Source Modell)</option>
+                </optgroup>
               </select>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                Wähle Gemini 2.5 Flash für die beste Balance aus Geschwindigkeit und Stabilität.
+                Nicht-Gemini Modelle nutzen die OpenAI Whisper-API zur Transkription von Audiodateien.
               </span>
             </div>
 

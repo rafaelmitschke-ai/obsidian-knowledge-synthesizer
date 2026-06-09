@@ -882,6 +882,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [settings, setSettings] = useState({
     apiKey: '',
+    openaiApiKey: '',
+    anthropicApiKey: '',
+    openrouterApiKey: '',
     vaultPath: '',
     pdfPath: '',
     folder: 'Aetheris',
@@ -943,6 +946,9 @@ export default function App() {
 
     const loadedSettings = {
       apiKey: localStorage.getItem('aetheris_api_key') || '',
+      openaiApiKey: localStorage.getItem('aetheris_openai_api_key') || '',
+      anthropicApiKey: localStorage.getItem('aetheris_anthropic_api_key') || '',
+      openrouterApiKey: localStorage.getItem('aetheris_openrouter_api_key') || '',
       vaultPath: localStorage.getItem('aetheris_vault_path') || '',
       pdfPath: localStorage.getItem('aetheris_pdf_path') || '',
       folder: localStorage.getItem('aetheris_folder') || 'Aetheris',
@@ -1274,69 +1280,61 @@ ${contentToAnalyze}
       selectedModel = 'gemini-2.5-pro';
     }
 
-    let currentModel = selectedModel;
-    let attempts = 0;
-    const maxAttempts = 3;
-    let lastError = null;
+    try {
+      const res = await fetch(`${API_BASE}/api/synthesize-text`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          apiKey: settings.apiKey,
+          openaiApiKey: settings.openaiApiKey,
+          anthropicApiKey: settings.anthropicApiKey,
+          openrouterApiKey: settings.openrouterApiKey,
+          prompt: prompt,
+          model: selectedModel
+        })
+      });
 
-    while (attempts < maxAttempts) {
-      attempts++;
-      try {
-        const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${settings.apiKey}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: {
-              temperature: 0.2,
-              responseMimeType: "application/json",
-              maxOutputTokens: 8192
-            }
-          })
-        });
-
-        const geminiData = await geminiRes.json();
-
-        if (!geminiRes.ok) {
-          throw new Error(geminiData.error?.message || 'Fehler beim Aufruf der Gemini API.');
-        }
-
-        const rawJsonText = geminiData.candidates[0].content.parts[0].text;
-        const parsedData = cleanAndParseJson(rawJsonText);
-        return parsedData;
-
-      } catch (err) {
-        lastError = err;
-        console.warn(`Attempt ${attempts} failed for model ${currentModel}:`, err.message);
-
-        if (attempts < maxAttempts) {
-          let nextModel = currentModel;
-          if (attempts === 2 && currentModel.includes('pro')) {
-            nextModel = currentModel.replace('pro', 'flash');
-            const statusMsg = `API beschäftigt. Wechsle zu schnellerem Modell (${nextModel.split('/').pop()})...`;
-            console.log(statusMsg);
-            setSynthesisProgress(statusMsg);
-          } else {
-            const delay = attempts * 2000;
-            const statusMsg = `API beschäftigt. Erneuter Versuch in ${delay / 1000}s (Versuch ${attempts + 1}/${maxAttempts})...`;
-            console.log(statusMsg);
-            setSynthesisProgress(statusMsg);
-            await new Promise(resolve => setTimeout(resolve, delay));
-          }
-          currentModel = nextModel;
-        }
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Fehler bei der Synthese.');
       }
-    }
 
-    throw lastError || new Error('Wiederholte Syntheseversuche fehlgeschlagen.');
+      const parsedData = cleanAndParseJson(data.text);
+      return parsedData;
+    } catch (err) {
+      console.error(err);
+      throw err;
+    }
   };
 
   // Perform Synthesis Flow
   const handleSynthesize = async () => {
     setErrorMsg(null);
     setSynthesisProgress('');
-    if (!settings.apiKey) {
+    
+    const model = settings.model || 'gemini-2.5-flash';
+    const isGemini = model.startsWith('gemini-');
+    const isOpenAi = model.startsWith('gpt-');
+    const isAnthropic = model.startsWith('claude-');
+    const isOpenRouter = model.includes('/');
+
+    if (isGemini && !settings.apiKey) {
       setErrorMsg('Bitte hinterlege zuerst deinen Gemini API-Key in den Einstellungen.');
+      setShowSettings(true);
+      return;
+    }
+    if (isOpenAi && !settings.openaiApiKey) {
+      setErrorMsg('Bitte hinterlege zuerst deinen OpenAI API-Key in den Einstellungen.');
+      setShowSettings(true);
+      return;
+    }
+    if (isAnthropic && !settings.anthropicApiKey) {
+      setErrorMsg('Bitte hinterlege zuerst deinen Anthropic API-Key in den Einstellungen.');
+      setShowSettings(true);
+      return;
+    }
+    if (isOpenRouter && !settings.openrouterApiKey) {
+      setErrorMsg('Bitte hinterlege zuerst deinen OpenRouter API-Key in den Einstellungen.');
       setShowSettings(true);
       return;
     }
@@ -1373,10 +1371,13 @@ ${contentToAnalyze}
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             apiKey: settings.apiKey,
+            openaiApiKey: settings.openaiApiKey,
+            anthropicApiKey: settings.anthropicApiKey,
+            openrouterApiKey: settings.openrouterApiKey,
             localPath: audioPath,
             audioUrl: audioUrl,
             prompt: prompt,
-            model: settings.model || 'gemini-1.5-flash'
+            model: settings.model || 'gemini-2.5-flash'
           })
         });
 
@@ -1813,6 +1814,9 @@ ${contentToAnalyze}
           folder: settings.folder,
           query: copilotQuery,
           apiKey: settings.apiKey,
+          openaiApiKey: settings.openaiApiKey,
+          anthropicApiKey: settings.anthropicApiKey,
+          openrouterApiKey: settings.openrouterApiKey,
           model: settings.model
         })
       });
