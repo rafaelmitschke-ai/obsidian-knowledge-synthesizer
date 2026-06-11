@@ -7,9 +7,12 @@ Aetheris ist ein intelligentes, KI-gestütztes Tool zur Wissenssynthese, das Aud
 ## ✨ Features
 
 - **📻 Spotify & Podcast Resolution**: Löst Spotify-Show/Episoden-Links und standardmäßige Podcast-Feeds automatisch in abspielbare MP3s auf.
-- **🎙️ Audio & Voice Memo Synthese**: Lade Audio-Dateien hoch oder nimm Memos direkt über das Mikrofon auf. Gemini analysiert diese und generiert strukturierte Zusammenfassungen, Key Takeaways und Karteikarten.
-- **🕸️ Vault-weiter Interaktiver Graph**: Visualisiert die Wiki-Link-Verbindungen (`[[Notiz]]`) deines gesamten Obsidian-Tresors. Unterstützt flüssiges Zoomen (Pinch-to-touch), Panning, Drag-and-Drop und das direkte Öffnen jeder Notiz im Editor.
+- **📚 E-Book Text-Extraktion (PDF & EPUB)**: Ziehe PDF- und EPUB-E-Books per Drag-and-Drop direkt in das Tool. Aetheris extrahiert den Text im RAM und beachtet bei EPUBs die exakte Spine-Reihenfolge der Kapitel.
+- **🎙️ Audio & Voice Memo Synthese (inkl. M4B)**: Lade Audiodateien wie Podcasts oder M4B-Hörbücher direkt hoch. Gemini analysiert die Aufnahmen nativ oder transkribiert sie bei Nicht-Gemini-Modellen automatisch via Whisper.
+- **🔓 Integrierter Audible-Entschlüssler**: Öffne den integrierten Entschlüssler im Audio-Reiter, um DRM-geschützte Audible-Dateien (.aax/.m4b) mittels FFmpeg und deiner Activation Bytes in Sekunden direkt in DRM-freie M4Bs zu konvertieren.
+- **🕸️ Vault-weiter Interaktiver Graph**: Visualisiert die Wiki-Link-Verbindungen (`[[Notiz]]`) deines gesamten Obsidian-Tresors. Bietet flüssiges Zoomen (Pinch-to-touch), Panning, Drag-and-Drop, kamerafokussiertes Damping (Sanftes Zentrieren beim Öffnen von Notizen), Nachbarschafts-Fokus (Hervorheben direkter Links), Ordner-Farbcodierung und Richtungspfeile.
 - **✏️ Integrierter Markdown-Editor**: Bearbeite und speichere Notizen direkt im Tool. Automatische PDF-Generierung für jede Notiz.
+- **🤖 Multi-Provider LLMs**: Unterstützt flexibel Gemini (2.5 Flash/Pro), OpenAI (GPT-4o/Mini), Anthropic (Claude 3.5 Sonnet/Haiku) und OpenRouter (DeepSeek V3, Llama 3.1) für die Analyse und den Copiloten.
 - **🔍 Lokale Suchmaschine (TF-IDF & Semantisch)**: Durchsuche deinen Tresor blitzschnell lokal oder nutze den **RAG Obsidian Copilot**, um Fragen basierend auf deinen eigenen Notizen per KI zu beantworten.
 
 ---
@@ -18,7 +21,8 @@ Aetheris ist ein intelligentes, KI-gestütztes Tool zur Wissenssynthese, das Aud
 
 - **Node.js** (Version 18 oder neuer)
 - **Obsidian** (installierte App & ein aktiver Tresor)
-- **Gemini API Key** (für die KI-Features und Spotify-Auflösung)
+- **FFmpeg** (optional, im System-PATH registriert für das Entschlüsseln von Audible-Dateien)
+- **API-Keys** (z. B. Gemini, OpenAI, Anthropic, OpenRouter) für die jeweiligen KI-Features
 
 ---
 

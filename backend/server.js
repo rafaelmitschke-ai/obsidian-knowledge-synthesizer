@@ -7,6 +7,10 @@ import { fileURLToPath } from 'url';
 import os from 'os';
 import PDFDocument from 'pdfkit';
 import { fetch as undiciFetch, Agent } from 'undici';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const pdfParse = require('pdf-parse');
+import AdmZip from 'adm-zip';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -423,6 +427,107 @@ app.post('/api/download-pdf', (req, res) => {
   }
 });
 
+function extractTextFromEpub(epubBuffer) {
+  const zip = new AdmZip(epubBuffer);
+  const entries = zip.getEntries();
+  
+  // Find the .opf file
+  const opfEntry = entries.find(e => e.entryName.endsWith('.opf'));
+  if (!opfEntry) {
+    throw new Error('Invalid EPUB: content.opf not found.');
+  }
+  
+  const opfContent = opfEntry.getData().toString('utf8');
+  const opfDir = path.dirname(opfEntry.entryName);
+  
+  // Robust manifest extraction
+  const manifestItems = {};
+  const manifestMatch = opfContent.match(/<manifest>([\s\S]*?)<\/manifest>/i);
+  if (manifestMatch) {
+    const items = manifestMatch[1].match(/<item\s+[^>]*>/gi) || [];
+    items.forEach(item => {
+      const idMatch = item.match(/id\s*=\s*["']([^"']+)["']/i);
+      const hrefMatch = item.match(/href\s*=\s*["']([^"']+)["']/i);
+      if (idMatch && hrefMatch) {
+        manifestItems[idMatch[1]] = hrefMatch[1];
+      }
+    });
+  }
+
+  // Robust spine extraction
+  const spineRefItems = [];
+  const spineMatch = opfContent.match(/<spine[^>]*>([\s\S]*?)<\/spine>/i);
+  if (spineMatch) {
+    const itemrefs = spineMatch[1].match(/<itemref\s+[^>]*>/gi) || [];
+    itemrefs.forEach(itemref => {
+      const idrefMatch = itemref.match(/idref\s*=\s*["']([^"']+)["']/i);
+      if (idrefMatch) {
+        spineRefItems.push(idrefMatch[1]);
+      }
+    });
+  }
+  
+  let fullText = "";
+  
+  // Extract text in spine order
+  for (const idref of spineRefItems) {
+    const href = manifestItems[idref];
+    if (href) {
+      const decodedHref = decodeURIComponent(href);
+      const entryPath = opfDir === '.' || opfDir === '' 
+        ? decodedHref 
+        : path.join(opfDir, decodedHref).replace(/\\/g, '/');
+      const entry = zip.getEntry(entryPath);
+      if (entry) {
+        const html = entry.getData().toString('utf8');
+        const text = html
+          .replace(/<head>[\s\S]*?<\/head>/gi, '')
+          .replace(/<script[\s\S]*?<\/script>/gi, '')
+          .replace(/<style[\s\S]*?<\/style>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/g, ' ')
+          .replace(/&lt;/g, '<')
+          .replace(/&gt;/g, '>')
+          .replace(/&amp;/g, '&')
+          .replace(/&quot;/g, '"')
+          .replace(/\s+/g, ' ');
+        fullText += text + "\n\n";
+      }
+    }
+  }
+  
+  return fullText.trim();
+}
+
+app.post('/api/extract-pdf', express.raw({ type: 'application/pdf', limit: '50mb' }), async (req, res) => {
+  try {
+    const pdfBuffer = req.body;
+    if (!pdfBuffer || pdfBuffer.length === 0) {
+      return res.status(400).json({ error: 'PDF Buffer is empty or invalid.' });
+    }
+    const parser = new pdfParse.PDFParse({ data: pdfBuffer });
+    const data = await parser.getText();
+    return res.json({ success: true, text: data.text });
+  } catch (error) {
+    console.error('Error extracting text from PDF:', error);
+    return res.status(500).json({ error: 'Text-Extraktion aus PDF fehlgeschlagen.', details: error.message });
+  }
+});
+
+app.post('/api/extract-epub', express.raw({ type: 'application/epub+zip', limit: '100mb' }), async (req, res) => {
+  try {
+    const epubBuffer = req.body;
+    if (!epubBuffer || epubBuffer.length === 0) {
+      return res.status(400).json({ error: 'EPUB Buffer is empty or invalid.' });
+    }
+    const text = extractTextFromEpub(epubBuffer);
+    return res.json({ success: true, text: text });
+  } catch (error) {
+    console.error('Error extracting text from EPUB:', error);
+    return res.status(500).json({ error: 'Text-Extraktion aus EPUB fehlgeschlagen.', details: error.message });
+  }
+});
+
 // 3. List existing synthesized notes
 app.post('/api/list-notes', (req, res) => {
   const { vaultPath, folder } = req.body;
@@ -569,6 +674,7 @@ function getMimeType(filePath) {
   if (ext === '.wav') return 'audio/wav';
   if (ext === '.m4a') return 'audio/m4a';
   if (ext === '.x-m4a') return 'audio/x-m4a';
+  if (ext === '.m4b') return 'audio/mp4';
   if (ext === '.ogg') return 'audio/ogg';
   if (ext === '.aac') return 'audio/aac';
   if (ext === '.flac') return 'audio/flac';
@@ -619,7 +725,11 @@ async function deleteFromGeminiFileApi(apiKey, fileName) {
 async function transcribeAudioWithWhisper(fileBuffer, mimeType, fileName, apiKey) {
   const formData = new FormData();
   const blob = new Blob([fileBuffer], { type: mimeType });
-  formData.append('file', blob, fileName);
+  let uploadFileName = fileName;
+  if (fileName.toLowerCase().endsWith('.m4b')) {
+    uploadFileName = fileName.substring(0, fileName.length - 4) + '.m4a';
+  }
+  formData.append('file', blob, uploadFileName);
   formData.append('model', 'whisper-1');
 
   const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
@@ -1086,6 +1196,136 @@ app.post('/api/upload-audio', express.raw({ type: '*/*', limit: '50mb' }), (req,
   } catch (error) {
     console.error('Error writing recorded audio:', error);
     return res.status(500).json({ error: 'Failed to write recorded audio memo.', details: error.message });
+  }
+});
+
+// Binary upload for files in the Podcast/Audio tab
+app.post('/api/upload-audio-file', express.raw({ type: '*/*', limit: '500mb' }), (req, res) => {
+  try {
+    const fileBuffer = req.body;
+    if (!fileBuffer || fileBuffer.length === 0) {
+      return res.status(400).json({ error: 'Keine Audio-Bytes empfangen.' });
+    }
+
+    const headerFileName = req.headers['x-file-name'];
+    let originalName = 'uploaded_audio.mp3';
+    if (headerFileName) {
+      originalName = decodeURIComponent(headerFileName);
+    }
+
+    const ext = path.extname(originalName).toLowerCase();
+    const allowed = ['.mp3', '.mpeg', '.wav', '.m4a', '.m4b', '.ogg', '.aac', '.flac'];
+    if (!allowed.includes(ext)) {
+      return res.status(400).json({ error: `Ungültiges Dateiformat für Audio: ${ext}. Erlaubt sind: ${allowed.join(', ')}` });
+    }
+
+    const tempDir = path.join(__dirname, 'temp');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    const tempFileName = `audio_${Date.now()}${ext}`;
+    const tempFilePath = path.join(tempDir, tempFileName);
+
+    fs.writeFileSync(tempFilePath, fileBuffer);
+
+    return res.json({
+      success: true,
+      filePath: tempFilePath,
+      fileName: originalName
+    });
+  } catch (error) {
+    console.error('Error writing uploaded audio file:', error);
+    return res.status(500).json({ error: 'Speichern der Audio-Datei fehlgeschlagen.', details: error.message });
+  }
+});
+
+// Local FFmpeg decryption tool for Audible audiobooks (.aax or .m4b)
+app.post('/api/decrypt-audible', async (req, res) => {
+  const { localPath, activationBytes } = req.body;
+
+  if (!localPath || !activationBytes) {
+    return res.status(400).json({ error: 'Dateipfad und Activation Bytes sind erforderlich.' });
+  }
+
+  // Validate activation bytes (4-byte hex: 8 characters)
+  const hexRegex = /^[a-fA-F0-9]{8}$/;
+  if (!hexRegex.test(activationBytes.trim())) {
+    return res.status(400).json({ error: 'Ungültige Activation Bytes. Es muss ein 8-stelliger Hex-Code sein (z.B. 1a2b3c4d).' });
+  }
+
+  try {
+    const resolvedPath = path.resolve(localPath);
+    if (!fs.existsSync(resolvedPath)) {
+      return res.status(400).json({ error: `Die Datei existiert nicht unter dem Pfad: ${resolvedPath}` });
+    }
+
+    const ext = path.extname(resolvedPath);
+    const dirName = path.dirname(resolvedPath);
+    const baseName = path.basename(resolvedPath, ext);
+    
+    // Output path: suffix with _decrypted.m4b
+    const outputPath = path.join(dirName, `${baseName}_decrypted.m4b`);
+
+    // Spawn ffmpeg
+    const args = [
+      '-y',
+      '-activation_bytes', activationBytes.trim(),
+      '-i', resolvedPath,
+      '-c', 'copy',
+      outputPath
+    ];
+
+    console.log(`Running ffmpeg: ffmpeg ${args.join(' ')}`);
+
+    const ffmpegProcess = spawn('ffmpeg', args);
+
+    let stderr = '';
+    ffmpegProcess.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    ffmpegProcess.on('close', (code) => {
+      if (code !== 0) {
+        console.error(`FFmpeg exited with code ${code}. Stderr: ${stderr}`);
+        
+        let customError = 'Hörbuch-Entschlüsselung fehlgeschlagen.';
+        if (stderr.includes('file decrypt failed') || stderr.includes('Activation bytes') || stderr.includes('verify')) {
+          customError = 'Ungültige Activation Bytes. Das Hörbuch konnte nicht entschlüsselt werden.';
+        } else if (stderr.includes('not recognized') || stderr.includes('not found') || stderr.includes('CommandNotFoundException') || stderr.includes('cannot find') || stderr.includes('ENOENT')) {
+          customError = 'FFmpeg ist auf diesem System nicht installiert oder nicht im PATH. Bitte installiere FFmpeg.';
+        }
+
+        return res.status(500).json({ 
+          error: customError,
+          details: stderr
+        });
+      }
+
+      console.log(`Successfully decrypted audiobook to: ${outputPath}`);
+      return res.json({
+        success: true,
+        outputPath: outputPath,
+        message: `Hörbuch erfolgreich entschlüsselt und gespeichert unter: ${outputPath}`
+      });
+    });
+
+    // Handle process spawning error (e.g. ffmpeg not installed/found)
+    ffmpegProcess.on('error', (err) => {
+      console.error('Failed to start FFmpeg process:', err);
+      let errorMsg = 'Fehler beim Starten von FFmpeg.';
+      if (err.code === 'ENOENT') {
+        errorMsg = 'FFmpeg konnte nicht gefunden werden. Bitte stelle sicher, dass FFmpeg installiert und im System-PATH eingetragen ist.';
+      }
+      return res.status(500).json({
+        error: errorMsg,
+        details: err.message
+      });
+    });
+
+  } catch (error) {
+    console.error('Decryption error:', error);
+    return res.status(500).json({ error: 'Fehler bei der Entschlüsselung.', details: error.message });
   }
 });
 
@@ -1864,6 +2104,27 @@ app.post('/api/graph', (req, res) => {
       const relativePath = path.relative(resolvedVaultPath, filePath).replace(/\\/g, '/');
       const noteName = path.basename(filePath, '.md');
       
+      // Parse tags from frontmatter
+      let tags = [];
+      try {
+        const fileContent = fs.readFileSync(filePath, 'utf8');
+        if (fileContent.startsWith('---')) {
+          const match = fileContent.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+          if (match) {
+            const yamlLines = match[1].split('\n');
+            yamlLines.forEach(line => {
+              const parts = line.split(':');
+              if (parts.length >= 2 && parts[0].trim() === 'tags') {
+                const val = parts.slice(1).join(':').trim();
+                tags = val.replace(/[\[\]]/g, '').split(',').map(t => t.trim()).filter(Boolean);
+              }
+            });
+          }
+        }
+      } catch (err) {
+        // ignore read error
+      }
+
       // Map lowercase note name
       noteNameMap.set(noteName.toLowerCase(), noteName);
       
@@ -1875,7 +2136,8 @@ app.post('/api/graph', (req, res) => {
         id: noteName,
         label: noteName,
         relativePath: relativePath,
-        exists: true
+        exists: true,
+        tags: tags
       });
     });
 

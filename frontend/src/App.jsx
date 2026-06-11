@@ -64,39 +64,149 @@ const repairTruncatedJson = (jsonStr) => {
   return repaired;
 };
 
+const resilientJsonRepair = (str) => {
+  let cleaned = str.trim();
+  let repaired = "";
+  let inString = false;
+  let escapeNext = false;
+
+  for (let i = 0; i < cleaned.length; i++) {
+    const char = cleaned[i];
+
+    if (escapeNext) {
+      repaired += char;
+      escapeNext = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      repaired += char;
+      escapeNext = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      repaired += char;
+      continue;
+    }
+
+    if (inString) {
+      repaired += char;
+      continue;
+    }
+
+    const nextChar = cleaned[i + 1];
+    const isWordChar = /[0-9a-zA-Z]/.test(char);
+    const isNextWhitespace = nextChar && /\s/.test(nextChar);
+
+    if (char === '"' || char === '}' || char === ']' || (isWordChar && isNextWhitespace)) {
+      repaired += char;
+
+      let nextNonWhitespaceIdx = -1;
+      let hasCommaOrColon = false;
+      for (let j = i + 1; j < cleaned.length; j++) {
+        const nextC = cleaned[j];
+        if (/\s/.test(nextC)) {
+          continue;
+        }
+        if (nextC === ',' || nextC === ':') {
+          hasCommaOrColon = true;
+          break;
+        }
+        nextNonWhitespaceIdx = j;
+        break;
+      }
+
+      if (nextNonWhitespaceIdx !== -1 && !hasCommaOrColon) {
+        const nextC = cleaned[nextNonWhitespaceIdx];
+        if (nextC === '"' || nextC === '{' || nextC === '[' || /[0-9tfn\-]/.test(nextC)) {
+          repaired += ",";
+        }
+      }
+      continue;
+    }
+
+    repaired += char;
+  }
+
+  repaired = repaired.replace(/,\s*([}\]])/g, '$1');
+  return repaired;
+};
+
 const cleanAndParseJson = (text) => {
   if (!text) return null;
-  let cleaned = text.trim();
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, '');
-    cleaned = cleaned.replace(/\s*```$/, '');
-  }
   
-  // Escape raw newlines and tabs inside double quotes
-  cleaned = cleaned.replace(/"(?:[^"\\]|\\.)*"/g, function(match) {
-    return match
-      .replace(/\r?\n/g, '\\n')
-      .replace(/\t/g, '\\t');
-  });
+  const stripMarkdown = (str) => {
+    let s = str.trim();
+    if (s.startsWith('```')) {
+      s = s.replace(/^```[a-zA-Z]*\s*/, '');
+      s = s.replace(/\s*```$/, '');
+    }
+    return s.trim();
+  };
+
+  let cleaned = stripMarkdown(text);
+  
+  const escapeInsideQuotes = (str) => {
+    return str.replace(/"(?:[^"\\]|\\.)*"/g, function(match) {
+      return match
+        .replace(/\r?\n/g, '\\n')
+        .replace(/\t/g, '\\t');
+    });
+  };
 
   try {
-    return JSON.parse(cleaned.trim());
+    return JSON.parse(escapeInsideQuotes(cleaned));
   } catch (err) {
-    console.warn('Initial JSON parsing failed. Attempting resilient repair...', err);
+    console.warn('Initial JSON parsing failed. Attempting cleanup and repair...', err);
+    
+    // 1. Try extracting JSON boundaries { ... }
+    const firstBrace = cleaned.indexOf('{');
+    const lastBrace = cleaned.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      const extracted = cleaned.substring(firstBrace, lastBrace + 1);
+      try {
+        return JSON.parse(escapeInsideQuotes(extracted));
+      } catch (extractErr) {
+        console.warn('Parsing extracted JSON failed. Attempting syntax repair...', extractErr);
+        try {
+          const repaired = resilientJsonRepair(extracted);
+          return JSON.parse(escapeInsideQuotes(repaired));
+        } catch (repairErr) {
+          console.warn('Syntax repair failed. Attempting truncation repair...', repairErr);
+          try {
+            const repairedTrunc = repairTruncatedJson(extracted);
+            const repairedBoth = resilientJsonRepair(repairedTrunc);
+            return JSON.parse(escapeInsideQuotes(repairedBoth));
+          } catch (truncErr) {
+            console.error('All extracted JSON repair paths failed.');
+          }
+        }
+      }
+    }
+    
+    // 2. Try repairing original cleaned text
     try {
-      const repaired = repairTruncatedJson(cleaned);
-      return JSON.parse(repaired.trim());
+      const repaired = resilientJsonRepair(cleaned);
+      return JSON.parse(escapeInsideQuotes(repaired));
     } catch (repairErr) {
-      console.error('JSON repair and parsing failed. Raw text length:', cleaned.length, repairErr);
-      fetch(`${API_BASE}/api/debug-log`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          error: err.message,
-          text: cleaned
-        })
-      }).catch(() => {});
-      throw err;
+      try {
+        const repairedTrunc = repairTruncatedJson(cleaned);
+        const repairedBoth = resilientJsonRepair(repairedTrunc);
+        return JSON.parse(escapeInsideQuotes(repairedBoth));
+      } catch (bothErr) {
+        console.error('JSON repair and parsing failed completely. Raw text length:', cleaned.length, bothErr);
+        fetch(`${API_BASE}/api/debug-log`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            error: err.message,
+            text: text
+          })
+        }).catch(() => {});
+        throw err;
+      }
     }
   }
 };
@@ -401,14 +511,66 @@ tags: {{tags}}
 ## Concept Flashcards (Q&A)
 {{flashcards}}`;
 
+const getFolderColor = (relativePath, exists) => {
+  if (!exists) return 'rgba(100, 116, 139, 0.4)';
+  if (!relativePath) return '#38bdf8'; // Default Cyan
+  
+  const parts = relativePath.split('/');
+  if (parts.length <= 1) {
+    return '#94a3b8'; // Slate grey for root level
+  }
+  
+  const parentFolder = parts[0];
+  const folderLower = parentFolder.toLowerCase();
+  
+  if (folderLower.includes('kontext') || folderLower.includes('00')) {
+    return '#f97316'; // Orange
+  } else if (folderLower.includes('aetheris')) {
+    return '#10b981'; // Emerald Green
+  } else if (folderLower.includes('projekt') || folderLower.includes('02') || folderLower.includes('projects')) {
+    return '#a855f7'; // Violet/Purple
+  } else if (folderLower.includes('archiv') || folderLower.includes('archive')) {
+    return '#64748b'; // Slate
+  } else if (folderLower.includes('ressourcen') || folderLower.includes('quellen') || folderLower.includes('resources')) {
+    return '#eab308'; // Amber
+  }
+  
+  return '#06b6d4'; // Cyan
+};
+
+const getFolderOrTagColor = (node) => {
+  if (!node.exists) return 'rgba(100, 116, 139, 0.35)';
+  
+  // Check tags first!
+  if (node.tags && Array.isArray(node.tags) && node.tags.length > 0) {
+    for (const tag of node.tags) {
+      const tagLower = tag.toLowerCase();
+      if (tagLower.includes('kontext') || tagLower.includes('context')) {
+        return '#f97316'; // Orange
+      } else if (tagLower.includes('aetheris') || tagLower.includes('green') || tagLower.includes('system')) {
+        return '#10b981'; // Emerald Green
+      } else if (tagLower.includes('projekt') || tagLower.includes('project') || tagLower.includes('todo')) {
+        return '#a855f7'; // Purple
+      } else if (tagLower.includes('ressource') || tagLower.includes('source') || tagLower.includes('quelle')) {
+        return '#eab308'; // Yellow/Amber
+      } else if (tagLower.includes('archiv') || tagLower.includes('archive') || tagLower.includes('done')) {
+        return '#64748b'; // Muted Slate
+      }
+    }
+  }
+
+  // Fallback to relativePath
+  return getFolderColor(node.relativePath, node.exists);
+};
+
 const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
   const canvasRef = useRef(null);
   const containerRef = useRef(null);
   
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
   const [selectedNode, setSelectedNode] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [graphRenderTrigger, setGraphRenderTrigger] = useState(0);
+  const forceUpdate = () => setGraphRenderTrigger(prev => prev + 1);
 
   const stateRef = useRef({
     nodes: [],
@@ -416,7 +578,12 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
     draggedNode: null,
     isPanning: false,
     panStart: { x: 0, y: 0 },
-    mousePos: { x: 0, y: 0 }
+    mousePos: { x: 0, y: 0 },
+    pan: { x: 0, y: 0 },
+    zoom: 1,
+    targetPan: { x: 0, y: 0 },
+    targetZoom: 1,
+    isAnimatingCamera: false
   });
 
   useEffect(() => {
@@ -442,6 +609,29 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
 
     currentState.links = data.links;
   }, [data]);
+
+  const focusOnNode = (nodeId) => {
+    const state = stateRef.current;
+    const node = state.nodes.find(n => n.id === nodeId);
+    const canvas = canvasRef.current;
+    if (node && canvas) {
+      const w = canvas.width;
+      const h = canvas.height;
+      state.targetZoom = 1.2;
+      state.targetPan = {
+        x: w / 2 - node.x * 1.2,
+        y: h / 2 - node.y * 1.2
+      };
+      state.isAnimatingCamera = true;
+    }
+  };
+
+  useEffect(() => {
+    const focusNodeId = selectedNode?.id || activeNoteTitle;
+    if (focusNodeId) {
+      focusOnNode(focusNodeId);
+    }
+  }, [selectedNode, activeNoteTitle, data]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -550,22 +740,78 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
       const { nodes, links } = state;
 
       ctx.save();
-      ctx.translate(pan.x, pan.y);
-      ctx.scale(zoom, zoom);
+      ctx.translate(state.pan.x, state.pan.y);
+      ctx.scale(state.zoom, state.zoom);
 
-      ctx.lineWidth = 1;
       const nodeMap = {};
       nodes.forEach(n => { nodeMap[n.id] = n; });
+
+      const focusNodeId = selectedNode?.id || activeNoteTitle;
+      const hasFocus = !!focusNodeId;
+      const neighbors = new Set();
+      if (hasFocus) {
+        neighbors.add(focusNodeId);
+        links.forEach(link => {
+          const sId = typeof link.source === 'object' ? link.source.id : link.source;
+          const tId = typeof link.target === 'object' ? link.target.id : link.target;
+          if (sId === focusNodeId) {
+            neighbors.add(tId);
+          } else if (tId === focusNodeId) {
+            neighbors.add(sId);
+          }
+        });
+      }
 
       links.forEach(link => {
         const sourceNode = nodeMap[link.source];
         const targetNode = nodeMap[link.target];
         if (sourceNode && targetNode) {
+          const sId = typeof link.source === 'object' ? link.source.id : link.source;
+          const tId = typeof link.target === 'object' ? link.target.id : link.target;
+          
+          const isLinkFocused = !hasFocus || (sId === focusNodeId || tId === focusNodeId);
+          
+          // Calculate intersection with target node boundary
+          const isTargetCurrent = targetNode.id === activeNoteTitle;
+          const isTargetSelected = selectedNode && selectedNode.id === targetNode.id;
+          const targetRadius = isTargetCurrent ? 9 : (isTargetSelected ? 8 : 5);
+          
+          const dx = targetNode.x - sourceNode.x;
+          const dy = targetNode.y - sourceNode.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          const ux = dx / dist;
+          const uy = dy / dist;
+          
+          // Arrow tip position at the target node boundary
+          const gap = 3;
+          const arrowX = targetNode.x - ux * (targetRadius + gap);
+          const arrowY = targetNode.y - uy * (targetRadius + gap);
+          
+          // Line
           ctx.beginPath();
           ctx.moveTo(sourceNode.x, sourceNode.y);
-          ctx.lineTo(targetNode.x, targetNode.y);
-          ctx.strokeStyle = 'rgba(99, 102, 241, 0.15)';
+          ctx.lineTo(arrowX, arrowY);
+          ctx.lineWidth = isLinkFocused ? 1.5 : 0.8;
+          ctx.strokeStyle = isLinkFocused ? 'rgba(99, 102, 241, 0.55)' : 'rgba(99, 102, 241, 0.08)';
           ctx.stroke();
+          
+          // Arrowhead trigonometry
+          const angle = Math.atan2(dy, dx);
+          const arrowSize = 6;
+          const arrowAngle = Math.PI / 6; // 30 degrees
+          
+          const xLeft = arrowX - arrowSize * Math.cos(angle - arrowAngle);
+          const yLeft = arrowY - arrowSize * Math.sin(angle - arrowAngle);
+          const xRight = arrowX - arrowSize * Math.cos(angle + arrowAngle);
+          const yRight = arrowY - arrowSize * Math.sin(angle + arrowAngle);
+          
+          ctx.beginPath();
+          ctx.moveTo(arrowX, arrowY);
+          ctx.lineTo(xLeft, yLeft);
+          ctx.lineTo(xRight, yRight);
+          ctx.closePath();
+          ctx.fillStyle = isLinkFocused ? 'rgba(99, 102, 241, 0.7)' : 'rgba(99, 102, 241, 0.12)';
+          ctx.fill();
         }
       });
 
@@ -573,58 +819,110 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
         const isCurrent = node.id === activeNoteTitle;
         const isSelected = selectedNode && selectedNode.id === node.id;
         const matchesFilter = searchQuery ? node.id.toLowerCase().includes(searchQuery.toLowerCase()) : false;
+        const isFocused = !hasFocus || neighbors.has(node.id);
         
-        const radius = isCurrent ? 8 : (isSelected ? 7 : 5);
+        const radius = isCurrent ? 9 : (isSelected ? 8 : 5);
+        const baseColor = getFolderOrTagColor(node);
 
+        ctx.save();
+        ctx.globalAlpha = isFocused ? 1.0 : 0.15;
+
+        // Draw node circle
         ctx.beginPath();
         ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
 
         if (isCurrent) {
-          ctx.fillStyle = '#c084fc';
-          ctx.shadowColor = '#c084fc';
-          ctx.shadowBlur = 12;
+          ctx.fillStyle = baseColor;
+          ctx.shadowColor = baseColor;
+          ctx.shadowBlur = 15;
+          ctx.fill();
+          
+          // Gold outer ring for active node
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, radius + 2, 0, Math.PI * 2);
+          ctx.strokeStyle = '#facc15';
+          ctx.lineWidth = 1.8;
+          ctx.stroke();
         } else if (matchesFilter) {
           ctx.fillStyle = '#facc15';
           ctx.shadowColor = '#facc15';
-          ctx.shadowBlur = 15;
+          ctx.shadowBlur = 20;
+          ctx.fill();
         } else if (isSelected) {
-          ctx.fillStyle = '#6366f1';
-          ctx.shadowColor = '#6366f1';
-          ctx.shadowBlur = 10;
-        } else if (node.exists) {
-          ctx.fillStyle = '#38bdf8';
-          ctx.shadowColor = 'transparent';
-          ctx.shadowBlur = 0;
+          ctx.fillStyle = baseColor;
+          ctx.shadowColor = baseColor;
+          ctx.shadowBlur = 12;
+          ctx.fill();
+          
+          // White outer ring for selected node
+          ctx.beginPath();
+          ctx.arc(node.x, node.y, radius + 2, 0, Math.PI * 2);
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
         } else {
-          ctx.fillStyle = 'rgba(100, 116, 139, 0.4)';
-          ctx.shadowColor = 'transparent';
+          ctx.fillStyle = baseColor;
           ctx.shadowBlur = 0;
+          ctx.fill();
         }
 
-        ctx.fill();
-        ctx.shadowBlur = 0;
-
+        // Handle non-existent links/notes with dotted outline
         if (!node.exists) {
           ctx.beginPath();
           ctx.arc(node.x, node.y, radius + 1, 0, Math.PI * 2);
           ctx.setLineDash([2, 2]);
           ctx.strokeStyle = 'rgba(100, 116, 139, 0.6)';
+          ctx.lineWidth = 1;
           ctx.stroke();
           ctx.setLineDash([]);
         }
 
-        if (zoom > 0.4 || isSelected || isCurrent || matchesFilter) {
+        // Draw node labels
+        if (state.zoom > 0.4 || isSelected || isCurrent || matchesFilter) {
           ctx.font = isCurrent || isSelected || matchesFilter ? 'bold 11px Inter, system-ui' : '9px Inter, system-ui';
-          ctx.fillStyle = isCurrent ? '#c084fc' : (matchesFilter ? '#facc15' : (isSelected ? '#fff' : 'rgba(255, 255, 255, 0.7)'));
+          ctx.fillStyle = isCurrent ? '#facc15' : (matchesFilter ? '#facc15' : (isSelected ? '#fff' : 'rgba(255, 255, 255, 0.75)'));
           ctx.textAlign = 'center';
-          ctx.fillText(node.label, node.x, node.y - radius - 5);
+          ctx.fillText(node.label, node.x, node.y - radius - (isCurrent || isSelected ? 8 : 6));
         }
+
+        ctx.restore();
       });
 
       ctx.restore();
     };
 
     const tick = () => {
+      const state = stateRef.current;
+      
+      // Update camera animation
+      if (state.isAnimatingCamera) {
+        // Track the focused node if one is active
+        const focusNodeId = selectedNode?.id || activeNoteTitle;
+        const focusNode = state.nodes.find(n => n.id === focusNodeId);
+        if (focusNode) {
+          const w = canvas.width;
+          const h = canvas.height;
+          state.targetPan.x = w / 2 - focusNode.x * state.targetZoom;
+          state.targetPan.y = h / 2 - focusNode.y * state.targetZoom;
+        }
+
+        // Interpolation
+        const lerpFactor = 0.08;
+        state.pan.x += (state.targetPan.x - state.pan.x) * lerpFactor;
+        state.pan.y += (state.targetPan.y - state.pan.y) * lerpFactor;
+        state.zoom += (state.targetZoom - state.zoom) * lerpFactor;
+
+        // Stop animating when close enough
+        const panDistSq = (state.targetPan.x - state.pan.x) ** 2 + (state.targetPan.y - state.pan.y) ** 2;
+        const zoomDist = Math.abs(state.targetZoom - state.zoom);
+        if (panDistSq < 0.01 && zoomDist < 0.001) {
+          state.pan.x = state.targetPan.x;
+          state.pan.y = state.targetPan.y;
+          state.zoom = state.targetZoom;
+          state.isAnimatingCamera = false;
+        }
+      }
+
       updatePhysics();
       draw();
       animationId = requestAnimationFrame(tick);
@@ -635,7 +933,7 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
       window.removeEventListener('resize', resizeCanvas);
       cancelAnimationFrame(animationId);
     };
-  }, [pan, zoom, selectedNode, searchQuery, activeNoteTitle]);
+  }, [selectedNode, searchQuery, activeNoteTitle, data]);
 
   const getCanvasCoords = (e) => {
     const canvas = canvasRef.current;
@@ -650,9 +948,10 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
   };
 
   const getSimCoords = (canvasCoords) => {
+    const state = stateRef.current;
     return {
-      x: (canvasCoords.x - pan.x) / zoom,
-      y: (canvasCoords.y - pan.y) / zoom
+      x: (canvasCoords.x - state.pan.x) / state.zoom,
+      y: (canvasCoords.y - state.pan.y) / state.zoom
     };
   };
 
@@ -677,11 +976,13 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
 
     if (clickedNode) {
       state.draggedNode = clickedNode;
+      state.isAnimatingCamera = false;
       setSelectedNode(clickedNode);
       onNodeSelect(clickedNode);
     } else {
       state.isPanning = true;
-      state.panStart = { x: coords.x - pan.x, y: coords.y - pan.y };
+      state.isAnimatingCamera = false;
+      state.panStart = { x: coords.x - state.pan.x, y: coords.y - state.pan.y };
     }
   };
 
@@ -695,10 +996,10 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
       state.draggedNode.x = simCoords.x;
       state.draggedNode.y = simCoords.y;
     } else if (state.isPanning) {
-      setPan({
+      state.pan = {
         x: coords.x - state.panStart.x,
         y: coords.y - state.panStart.y
-      });
+      };
     }
   };
 
@@ -710,9 +1011,12 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
 
   const handleWheel = (e) => {
     e.preventDefault();
+    const state = stateRef.current;
+    state.isAnimatingCamera = false;
+    
     const coords = getCanvasCoords(e);
     const zoomFactor = 1.1;
-    let newZoom = zoom;
+    let newZoom = state.zoom;
 
     if (e.deltaY < 0) {
       newZoom = Math.min(newZoom * zoomFactor, 5);
@@ -720,19 +1024,21 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
       newZoom = Math.max(newZoom / zoomFactor, 0.15);
     }
 
-    const dx = coords.x - pan.x;
-    const dy = coords.y - pan.y;
+    const dx = coords.x - state.pan.x;
+    const dy = coords.y - state.pan.y;
     const newPan = {
-      x: coords.x - (dx / zoom) * newZoom,
-      y: coords.y - (dy / zoom) * newZoom
+      x: coords.x - (dx / state.zoom) * newZoom,
+      y: coords.y - (dy / state.zoom) * newZoom
     };
 
-    setZoom(newZoom);
-    setPan(newPan);
+    state.zoom = newZoom;
+    state.pan = newPan;
   };
 
   const touchStartRef = useRef({ distance: 0, zoom: 1, pan: { x: 0, y: 0 } });
   const handleTouchStart = (e) => {
+    const state = stateRef.current;
+    state.isAnimatingCamera = false;
     if (e.touches.length === 2) {
       e.preventDefault();
       const t1 = e.touches[0];
@@ -740,8 +1046,8 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
       const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
       touchStartRef.current = {
         distance: dist,
-        zoom: zoom,
-        pan: { ...pan }
+        zoom: state.zoom,
+        pan: { ...state.pan }
       };
     } else {
       handleMouseDown(e);
@@ -749,6 +1055,7 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
   };
 
   const handleTouchMove = (e) => {
+    const state = stateRef.current;
     if (e.touches.length === 2) {
       e.preventDefault();
       const t1 = e.touches[0];
@@ -774,8 +1081,8 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
           y: coords.y - (dy / start.zoom) * newZoom
         };
 
-        setZoom(newZoom);
-        setPan(newPan);
+        state.zoom = newZoom;
+        state.pan = newPan;
       }
     } else {
       handleMouseMove(e);
@@ -827,6 +1134,10 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('youtube'); // 'youtube' | 'text' | 'audio' | 'queue'
+  const fileInputRef = useRef(null);
+  const [isExtractingFile, setIsExtractingFile] = useState(false);
+  const audioFileInputRef = useRef(null);
+  const [isUploadingAudioFile, setIsUploadingAudioFile] = useState(false);
   
   // Single Inputs
   const [youtubeUrl, setYoutubeUrl] = useState('');
@@ -834,6 +1145,12 @@ export default function App() {
   const [textTitle, setTextTitle] = useState('');
   const [audioPath, setAudioPath] = useState('');
   const [audioUrl, setAudioUrl] = useState('');
+
+  // Decryption Tool States
+  const [showDecrypter, setShowDecrypter] = useState(false);
+  const [decryptPath, setDecryptPath] = useState('');
+  const [activationBytes, setActivationBytes] = useState('');
+  const [isDecrypting, setIsDecrypting] = useState(false);
 
   // Bulk Queue Input State
   const [queue, setQueue] = useState([]);
@@ -1304,6 +1621,168 @@ ${contentToAnalyze}
     } catch (err) {
       console.error(err);
       throw err;
+    }
+  };
+
+  const processEbookFile = async (file) => {
+    if (!file) return;
+    const name = file.name;
+    const ext = name.split('.').pop().toLowerCase();
+    
+    if (ext !== 'pdf' && ext !== 'epub') {
+      triggerToast('Ungültiges Dateiformat. Bitte lade eine PDF oder EPUB Datei hoch.', 'error');
+      return;
+    }
+
+    setIsExtractingFile(true);
+    triggerToast('E-Book wird hochgeladen und verarbeitet...', 'info');
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const endpoint = ext === 'pdf' ? '/api/extract-pdf' : '/api/extract-epub';
+      
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': ext === 'pdf' ? 'application/pdf' : 'application/epub+zip'
+        },
+        body: arrayBuffer
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Fehler bei der Text-Extraktion.');
+      }
+
+      // Populate form
+      setRawText(data.text);
+      
+      // Auto-set title (remove extension)
+      const cleanTitle = name.substring(0, name.lastIndexOf('.')) || name;
+      setTextTitle(cleanTitle);
+
+      triggerToast('E-Book Text erfolgreich extrahiert!', 'success');
+    } catch (err) {
+      console.error(err);
+      triggerToast(err.message || 'Verarbeitung des E-Books fehlgeschlagen.', 'error');
+    } finally {
+      setIsExtractingFile(false);
+    }
+  };
+
+  const handleFileDrop = (e) => {
+    e.preventDefault();
+    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+    e.currentTarget.style.borderColor = 'var(--border-glass-glow)';
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      processEbookFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  const handleFileSelect = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      processEbookFile(e.target.files[0]);
+    }
+  };
+
+  const processAudioFile = async (file) => {
+    if (!file) return;
+    const name = file.name;
+    const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
+    const allowed = ['.mp3', '.mpeg', '.wav', '.m4a', '.m4b', '.ogg', '.aac', '.flac'];
+
+    if (!allowed.includes(ext)) {
+      triggerToast(`Ungültiges Audioformat: ${ext}. Unterstützte Formate: ${allowed.join(', ')}`, 'error');
+      return;
+    }
+
+    setIsUploadingAudioFile(true);
+    triggerToast('Audiodatei wird verarbeitet...', 'info');
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      
+      const res = await fetch(`${API_BASE}/api/upload-audio-file`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'X-File-Name': encodeURIComponent(name)
+        },
+        body: arrayBuffer
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Fehler beim Upload der Audiodatei.');
+      }
+
+      setAudioPath(data.filePath);
+      setAudioUrl('');
+      triggerToast(`Audiodatei "${name}" erfolgreich geladen! Pfad: ${data.filePath}`, 'success');
+    } catch (err) {
+      console.error(err);
+      triggerToast(err.message || 'Verarbeitung der Audiodatei fehlgeschlagen.', 'error');
+    } finally {
+      setIsUploadingAudioFile(false);
+    }
+  };
+
+  const handleAudioFileDrop = (e) => {
+    e.preventDefault();
+    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+    e.currentTarget.style.borderColor = 'var(--border-glass-glow)';
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      processAudioFile(e.dataTransfer.files[0]);
+    }
+  };
+
+  const handleAudioFileSelect = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      processAudioFile(e.target.files[0]);
+    }
+  };
+
+  const handleDecryptAudible = async () => {
+    if (!decryptPath.trim() || !activationBytes.trim()) {
+      triggerToast('Bitte Dateipfad und Activation Bytes angeben.', 'error');
+      return;
+    }
+
+    const hexRegex = /^[a-fA-F0-9]{8}$/;
+    if (!hexRegex.test(activationBytes.trim())) {
+      triggerToast('Ungültige Activation Bytes. Es muss ein 8-stelliger Hex-Code sein (z.B. 1a2b3c4d).', 'error');
+      return;
+    }
+
+    setIsDecrypting(true);
+    triggerToast('Hörbuch wird entschlüsselt... Dies kann einen Moment dauern.', 'info');
+
+    try {
+      const res = await fetch(`${API_BASE}/api/decrypt-audible`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          localPath: decryptPath.trim(),
+          activationBytes: activationBytes.trim()
+        })
+      });
+
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        throw new Error(data.error || 'Fehler bei der Entschlüsselung.');
+      }
+
+      setAudioPath(data.outputPath);
+      setAudioUrl('');
+      triggerToast('Hörbuch erfolgreich entschlüsselt und geladen!', 'success');
+      setShowDecrypter(false);
+    } catch (err) {
+      console.error(err);
+      triggerToast(err.message || 'Hörbuch-Entschlüsselung fehlgeschlagen.', 'error');
+    } finally {
+      setIsDecrypting(false);
     }
   };
 
@@ -2698,6 +3177,54 @@ ${contentToAnalyze}
 
             {activeTab === 'text' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div 
+                  className="file-drop-zone"
+                  style={{
+                    border: '2px dashed var(--border-glass-glow)',
+                    borderRadius: '8px',
+                    padding: '20px',
+                    textAlign: 'center',
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    position: 'relative'
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.style.background = 'rgba(99, 102, 241, 0.05)';
+                    e.currentTarget.style.borderColor = 'var(--color-primary)';
+                  }}
+                  onDragLeave={(e) => {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                    e.currentTarget.style.borderColor = 'var(--border-glass-glow)';
+                  }}
+                  onDrop={(e) => handleFileDrop(e)}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <input 
+                    type="file" 
+                    ref={fileInputRef} 
+                    style={{ display: 'none' }} 
+                    accept=".pdf,.epub" 
+                    onChange={(e) => handleFileSelect(e)} 
+                  />
+                  {isExtractingFile ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                      <div className="spinner" style={{ width: '24px', height: '24px', border: '2px solid rgba(255,255,255,0.1)', borderTop: '2px solid var(--color-primary)' }}></div>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Text wird extrahiert...</span>
+                    </div>
+                  ) : (
+                    <div>
+                      <span style={{ fontSize: '1.4rem', marginRight: '8px' }}>📚</span>
+                      <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>
+                        Zieh ein E-Book hierher oder klicke zum Auswählen
+                      </span>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                        Unterstützt PDF und EPUB (max. 100MB)
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <div className="form-group">
                   <label className="form-label">Titel der Notiz</label>
                   <input
@@ -2724,12 +3251,173 @@ ${contentToAnalyze}
 
             {activeTab === 'audio' && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                <div 
+                  className="file-drop-zone"
+                  style={{
+                    border: '2px dashed var(--border-glass-glow)',
+                    borderRadius: '8px',
+                    padding: '20px',
+                    textAlign: 'center',
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    cursor: 'pointer',
+                    transition: 'all 0.2s ease',
+                    position: 'relative'
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.currentTarget.style.background = 'rgba(99, 102, 241, 0.05)';
+                    e.currentTarget.style.borderColor = 'var(--color-primary)';
+                  }}
+                  onDragLeave={(e) => {
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                    e.currentTarget.style.borderColor = 'var(--border-glass-glow)';
+                  }}
+                  onDrop={(e) => handleAudioFileDrop(e)}
+                  onClick={() => audioFileInputRef.current?.click()}
+                >
+                  <input 
+                    type="file" 
+                    ref={audioFileInputRef} 
+                    style={{ display: 'none' }} 
+                    accept=".mp3,.wav,.m4a,.m4b,.ogg,.aac,.flac" 
+                    onChange={(e) => handleAudioFileSelect(e)} 
+                  />
+                  {isUploadingAudioFile ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                      <div className="spinner" style={{ width: '24px', height: '24px', border: '2px solid rgba(255,255,255,0.1)', borderTop: '2px solid var(--color-primary)' }}></div>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Audio-Datei wird geladen...</span>
+                    </div>
+                  ) : (
+                    <div>
+                      <span style={{ fontSize: '1.4rem', marginRight: '8px' }}>🎙️</span>
+                      <span style={{ fontSize: '0.85rem', color: 'var(--text-primary)', fontWeight: '500' }}>
+                        Zieh eine Audio-Datei hierher oder klicke zum Auswählen
+                      </span>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
+                        Unterstützt MP3, WAV, M4A, M4B, FLAC (max. 500MB)
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* DRM audiobook warning */}
+                <div style={{
+                  padding: '12px',
+                  borderRadius: '6px',
+                  background: 'rgba(239, 68, 68, 0.08)',
+                  border: '1px solid rgba(239, 68, 68, 0.25)',
+                  color: '#f87171',
+                  fontSize: '0.75rem',
+                  display: 'flex',
+                  gap: '8px',
+                  alignItems: 'flex-start',
+                  lineHeight: '1.4'
+                }}>
+                  <span style={{ fontSize: '1.5rem', marginTop: '-4px' }}>⚠️</span>
+                  <div>
+                    <strong>Wichtiger Hinweis für Hörbücher (.m4b):</strong> DRM-geschützte Dateien (z.B. direkt aus Audible geladen) können nicht verarbeitet werden. Bitte entschlüssele die Datei vorab (z.B. Konvertierung in DRM-freies M4B oder MP3).
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'flex-start', marginTop: '-4px' }}>
+                  <button 
+                    className="btn btn-secondary" 
+                    style={{ 
+                      height: '32px', 
+                      padding: '0 12px', 
+                      fontSize: '0.75rem', 
+                      minWidth: 'auto', 
+                      background: 'rgba(99, 102, 241, 0.1)', 
+                      borderColor: 'rgba(99, 102, 241, 0.3)',
+                      color: 'var(--color-primary)'
+                    }}
+                    onClick={() => setShowDecrypter(!showDecrypter)}
+                  >
+                    {showDecrypter ? '▲ Entschlüsselungs-Tool ausblenden' : '🔓 Integrierten Audible-Entschlüssler öffnen'}
+                  </button>
+                </div>
+
+                {showDecrypter && (
+                  <div style={{
+                    padding: '16px',
+                    borderRadius: '8px',
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    border: '1px solid var(--border-glass)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '12px',
+                    marginTop: '4px'
+                  }}>
+                    <div style={{ fontWeight: '600', fontSize: '0.85rem', color: 'var(--text-primary)' }}>
+                      🔓 Audible-Hörbuch Entschlüsseln (FFmpeg)
+                    </div>
+                    
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontSize: '0.75rem' }}>Pfad zur verschlüsselten .aax / .m4b Datei</label>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                        <input
+                          type="text"
+                          className="text-input"
+                          style={{ height: '36px', fontSize: '0.8rem' }}
+                          placeholder="z.B. C:\Users\Name\Downloads\buch.aax"
+                          value={decryptPath}
+                          onChange={(e) => setDecryptPath(e.target.value)}
+                        />
+                        <button 
+                          className="btn btn-secondary" 
+                          style={{ height: '36px', padding: '0 12px', fontSize: '0.8rem', minWidth: 'auto', whiteSpace: 'nowrap' }}
+                          onClick={() => {
+                            if (audioPath) {
+                              setDecryptPath(audioPath);
+                            } else {
+                              triggerToast('Kein Pfad im Hauptfeld eingetragen. Bitte tippe ihn ein oder lade die Datei hoch.', 'info');
+                            }
+                          }}
+                        >
+                          Hauptpfad kopieren
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label className="form-label" style={{ fontSize: '0.75rem' }}>
+                        Activation Bytes (8-stelliger Hex-Code, z.B. 1a2b3c4d)
+                      </label>
+                      <input
+                        type="text"
+                        className="text-input"
+                        style={{ height: '36px', fontSize: '0.8rem' }}
+                        placeholder="z.B. 4e2c8a1f"
+                        value={activationBytes}
+                        onChange={(e) => setActivationBytes(e.target.value)}
+                      />
+                      <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                        💡 Tipp: Du kannst deine Activation Bytes über Online-Tools wie <a href="https://audible-key.com" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--color-primary)', textDecoration: 'underline' }}>audible-key.com</a> aus einer deiner .aax Dateien ermitteln.
+                      </span>
+                    </div>
+
+                    <button 
+                      className="btn btn-primary"
+                      style={{ height: '38px', marginTop: '4px' }}
+                      onClick={handleDecryptAudible}
+                      disabled={isDecrypting || !decryptPath || !activationBytes}
+                    >
+                      {isDecrypting ? (
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                          <div className="spinner" style={{ width: '16px', height: '16px', border: '2px solid rgba(255,255,255,0.1)', borderTop: '2px solid white' }}></div>
+                          Entschlüssele Hörbuch...
+                        </div>
+                      ) : 'Hörbuch entschlüsseln'}
+                    </button>
+                  </div>
+                )}
+
                 <div className="form-group">
                   <label className="form-label">Lokaler Dateipfad (auf deinem PC)</label>
                   <input
                     type="text"
                     className="text-input"
-                    placeholder="z.B. C:\Users\Name\Music\podcast.mp3"
+                    placeholder="z.B. C:\Users\Name\Music\audiobook.m4b oder podcast.mp3"
                     value={audioPath}
                     onChange={(e) => { setAudioPath(e.target.value); setAudioUrl(''); }}
                     disabled={isLoading}
@@ -2742,7 +3430,7 @@ ${contentToAnalyze}
                   — ODER —
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Direkte Audio-URL (MP3 / WAV / M4A)</label>
+                  <label className="form-label">Direkte Audio-URL (MP3 / WAV / M4A / M4B)</label>
                   <input
                     type="text"
                     className="text-input"
