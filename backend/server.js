@@ -669,6 +669,7 @@ app.post('/api/read-note', (req, res) => {
 // Helper to detect audio mime-type from path extension
 function getMimeType(filePath) {
   const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.pdf') return 'application/pdf';
   if (ext === '.mp3') return 'audio/mp3';
   if (ext === '.mpeg') return 'audio/mpeg';
   if (ext === '.wav') return 'audio/wav';
@@ -748,17 +749,22 @@ async function transcribeAudioWithWhisper(fileBuffer, mimeType, fileName, apiKey
 }
 
 async function callOpenAiChat(apiKey, model, messages) {
+  const isReasoning = model.startsWith('o1') || model.startsWith('o3');
+  const body = {
+    model: model,
+    messages: messages
+  };
+  if (!isReasoning) {
+    body.temperature = 0.3;
+  }
+
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`
     },
-    body: JSON.stringify({
-      model: model,
-      messages: messages,
-      temperature: 0.3
-    })
+    body: JSON.stringify(body)
   });
 
   const data = await response.json();
@@ -878,6 +884,11 @@ app.post('/api/analyze-audio', async (req, res) => {
       originalName = audioUrl.split('/').pop() || 'audio_file';
     }
 
+    const isPdf = mimeType === 'application/pdf';
+    if (isPdf && !isGemini) {
+      return res.status(400).json({ error: 'Bild/Grafik-PDFs (Vision/OCR) werden derzeit nur von Google Gemini-Modellen unterstützt, da diese Dokumente nativ visuell einlesen können. Bitte wähle ein Gemini-Modell.' });
+    }
+
     if (!isGemini) {
       console.log(`Transcribing audio via Whisper for non-Gemini model: ${selectedModel}...`);
       const transcribedText = await transcribeAudioWithWhisper(fileBuffer, mimeType, originalName, openaiApiKey);
@@ -886,7 +897,8 @@ app.post('/api/analyze-audio', async (req, res) => {
       const userMessageContent = `Hier ist das Transkript der Audiodatei:\n\n"""\n${transcribedText}\n"""\n\nBitte führe die Analyse und Synthese gemäß folgenden Anweisungen durch:\n\n${prompt}`;
       
       let answer;
-      if (selectedModel.startsWith('gpt-')) {
+      const isOpenAi = selectedModel.startsWith('gpt-') || selectedModel.startsWith('o1-') || selectedModel.startsWith('o3-') || selectedModel === 'o1';
+      if (isOpenAi) {
         answer = await callOpenAiChat(openaiApiKey, selectedModel, [{ role: 'user', content: userMessageContent }]);
       } else if (selectedModel.startsWith('claude-')) {
         if (!anthropicApiKey) {
@@ -1066,7 +1078,7 @@ app.post('/api/synthesize-text', async (req, res) => {
         throw new Error(data.error?.message || 'Fehler beim Aufruf der Gemini API.');
       }
       answer = data.candidates[0].content.parts[0].text;
-    } else if (selectedModel.startsWith('gpt-')) {
+    } else if (selectedModel.startsWith('gpt-') || selectedModel.startsWith('o1-') || selectedModel.startsWith('o3-') || selectedModel === 'o1') {
       if (!openaiApiKey) {
         return res.status(400).json({ error: 'OpenAI API-Key ist erforderlich.' });
       }
@@ -1214,9 +1226,9 @@ app.post('/api/upload-audio-file', express.raw({ type: '*/*', limit: '500mb' }),
     }
 
     const ext = path.extname(originalName).toLowerCase();
-    const allowed = ['.mp3', '.mpeg', '.wav', '.m4a', '.m4b', '.ogg', '.aac', '.flac'];
+    const allowed = ['.mp3', '.mpeg', '.wav', '.m4a', '.m4b', '.ogg', '.aac', '.flac', '.pdf'];
     if (!allowed.includes(ext)) {
-      return res.status(400).json({ error: `Ungültiges Dateiformat für Audio: ${ext}. Erlaubt sind: ${allowed.join(', ')}` });
+      return res.status(400).json({ error: `Ungültiges Dateiformat: ${ext}. Erlaubt sind: ${allowed.join(', ')}` });
     }
 
     const tempDir = path.join(__dirname, 'temp');
@@ -1224,7 +1236,7 @@ app.post('/api/upload-audio-file', express.raw({ type: '*/*', limit: '500mb' }),
       fs.mkdirSync(tempDir, { recursive: true });
     }
 
-    const tempFileName = `audio_${Date.now()}${ext}`;
+    const tempFileName = `upload_${Date.now()}${ext}`;
     const tempFilePath = path.join(tempDir, tempFileName);
 
     fs.writeFileSync(tempFilePath, fileBuffer);
@@ -1709,7 +1721,7 @@ Frage des Benutzers: ${query}`;
         throw new Error('Es wurde keine Antwort von Gemini generiert.');
       }
       answer = data.candidates[0].content.parts[0].text;
-    } else if (actualModel.startsWith('gpt-')) {
+    } else if (actualModel.startsWith('gpt-') || actualModel.startsWith('o1-') || actualModel.startsWith('o3-') || actualModel === 'o1') {
       if (!openaiApiKey) {
         return res.status(400).json({ error: 'OpenAI API-Key ist erforderlich für OpenAI-Modelle.' });
       }

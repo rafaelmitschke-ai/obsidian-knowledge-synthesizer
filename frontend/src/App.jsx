@@ -1152,6 +1152,11 @@ export default function App() {
   const [activationBytes, setActivationBytes] = useState('');
   const [isDecrypting, setIsDecrypting] = useState(false);
 
+  // PDF Vision States
+  const [isVisionPdf, setIsVisionPdf] = useState(false);
+  const [pdfFilePath, setPdfFilePath] = useState('');
+  const [isUploadingPdfFile, setIsUploadingPdfFile] = useState(false);
+
   // Bulk Queue Input State
   const [queue, setQueue] = useState([]);
   const [queueType, setQueueType] = useState('youtube');
@@ -1634,6 +1639,47 @@ ${contentToAnalyze}
       return;
     }
 
+    if (isVisionPdf) {
+      if (ext !== 'pdf') {
+        triggerToast('Die visuelle Analyse (Vision/OCR) wird nur für PDF-Dokumente unterstützt.', 'error');
+        return;
+      }
+
+      setIsUploadingPdfFile(true);
+      triggerToast('Bild-PDF wird auf den Server geladen...', 'info');
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const res = await fetch(`${API_BASE}/api/upload-audio-file`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/octet-stream',
+            'X-File-Name': encodeURIComponent(name)
+          },
+          body: arrayBuffer
+        });
+
+        const data = await res.json();
+        if (!res.ok || data.error) {
+          throw new Error(data.error || 'Fehler beim Upload der PDF-Datei.');
+        }
+
+        setPdfFilePath(data.filePath);
+        setRawText(`[Bild-PDF geladen: "${name}". Die Analyse erfolgt visuell über Gemini.]`);
+        
+        const cleanTitle = name.substring(0, name.lastIndexOf('.')) || name;
+        setTextTitle(cleanTitle);
+
+        triggerToast(`Bild-PDF "${name}" erfolgreich für Vision-Analyse geladen!`, 'success');
+      } catch (err) {
+        console.error(err);
+        triggerToast(err.message || 'Upload der PDF-Datei fehlgeschlagen.', 'error');
+      } finally {
+        setIsUploadingPdfFile(false);
+      }
+      return;
+    }
+
     setIsExtractingFile(true);
     triggerToast('E-Book wird hochgeladen und verarbeitet...', 'info');
 
@@ -1902,6 +1948,49 @@ ${contentToAnalyze}
           chunks = [{ text: data.text }];
         }
       } else {
+        if (isVisionPdf) {
+          if (!pdfFilePath) {
+            throw new Error('Bitte lade zuerst eine PDF-Datei hoch oder deaktiviere die Vision-Option.');
+          }
+          if (!model.startsWith('gemini-')) {
+            throw new Error('Die visuelle PDF-Analyse wird derzeit nur für Gemini-Modelle unterstützt.');
+          }
+
+          sourceInfo = textTitle ? `Bild-PDF: ${textTitle}` : 'Bild-PDF';
+          noteType = 'pdf-vision';
+
+          setCurrentStep(2); // AI Analysis
+          setSynthesisProgress('Gemini Vision analysiert das Bild-PDF (NotebookLM-Style)...');
+
+          const prompt = buildAudioSchemaPrompt(detailLevel);
+          const res = await fetch(`${API_BASE}/api/analyze-audio`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              apiKey: settings.apiKey,
+              openaiApiKey: settings.openaiApiKey,
+              anthropicApiKey: settings.anthropicApiKey,
+              openrouterApiKey: settings.openrouterApiKey,
+              localPath: pdfFilePath,
+              prompt: prompt,
+              model: model
+            })
+          });
+
+          const data = await res.json();
+          if (!res.ok || data.error) throw new Error(data.error || 'Fehler bei der PDF-Vision-Analyse.');
+
+          const parsedData = cleanAndParseJson(data.markdown);
+          const compiled = compileTemplate(parsedData, sourceInfo, noteType);
+
+          setStructuredData(parsedData);
+          setGeneratedMarkdown(compiled);
+          setGeneratedTitle(parsedData.title);
+          setCurrentStep(3);
+          triggerToast('Erfolgreich synthetisiert!', 'success');
+          return;
+        }
+
         if (!rawText) throw new Error('Bitte gib einen Text ein.');
         contentToAnalyze = rawText;
         sourceInfo = 'Pasted Text';
@@ -3208,10 +3297,12 @@ ${contentToAnalyze}
                     accept=".pdf,.epub" 
                     onChange={(e) => handleFileSelect(e)} 
                   />
-                  {isExtractingFile ? (
+                  {isExtractingFile || isUploadingPdfFile ? (
                     <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
                       <div className="spinner" style={{ width: '24px', height: '24px', border: '2px solid rgba(255,255,255,0.1)', borderTop: '2px solid var(--color-primary)' }}></div>
-                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Text wird extrahiert...</span>
+                      <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                        {isUploadingPdfFile ? 'PDF wird hochgeladen...' : 'Text wird extrahiert...'}
+                      </span>
                     </div>
                   ) : (
                     <div>
@@ -3224,6 +3315,71 @@ ${contentToAnalyze}
                       </div>
                     </div>
                   )}
+                </div>
+
+                <div 
+                  className="form-group" 
+                  style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '12px',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    background: 'rgba(255, 255, 255, 0.02)',
+                    border: '1px solid var(--border-glass-glow)',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    transition: 'all 0.2s ease'
+                  }}
+                  onClick={() => {
+                    setIsVisionPdf(!isVisionPdf);
+                    setPdfFilePath('');
+                    setRawText('');
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = 'rgba(99, 102, 241, 0.3)';
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--border-glass-glow)';
+                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    id="isVisionPdfCheckbox"
+                    checked={isVisionPdf}
+                    onChange={(e) => {
+                      setIsVisionPdf(e.target.checked);
+                      setPdfFilePath('');
+                      setRawText('');
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      width: '18px',
+                      height: '18px',
+                      cursor: 'pointer',
+                      accentColor: 'var(--color-primary)',
+                    }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', cursor: 'pointer' }}>
+                    <label 
+                      htmlFor="isVisionPdfCheckbox" 
+                      style={{ 
+                        fontSize: '0.85rem', 
+                        fontWeight: '600', 
+                        color: 'var(--text-primary)',
+                        cursor: 'pointer',
+                        margin: 0
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Als Bild/Grafik-PDF (Vision/OCR) verarbeiten
+                    </label>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      Erfordert ein Gemini-Modell. Perfekt für gescannte Dokumente, Grafiken und Skizzen (wie NotebookLM).
+                    </span>
+                  </div>
                 </div>
                 <div className="form-group">
                   <label className="form-label">Titel der Notiz</label>

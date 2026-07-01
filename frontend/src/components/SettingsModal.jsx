@@ -304,22 +304,26 @@ export default function SettingsModal({ isOpen, onClose, onSave }) {
                 onChange={(e) => setModel(e.target.value)}
                 style={{ height: '48px' }}
               >
-                <optgroup label="Google Gemini (Natives Audio)">
+                <optgroup label="Google Gemini (Natives Audio & PDF Vision)">
                   <option value="gemini-2.5-flash">Gemini 2.5 Flash (Empfohlen - Schnell & stabil)</option>
                   <option value="gemini-2.5-pro">Gemini 2.5 Pro (Hochpräzise & intelligent)</option>
                 </optgroup>
                 <optgroup label="OpenAI (Whisper benötigt)">
                   <option value="gpt-4o">GPT-4o (Sehr intelligent & ausgewogen)</option>
                   <option value="gpt-4o-mini">GPT-4o-Mini (Schnell & kostengünstig)</option>
+                  <option value="o3-mini">o3-mini (Neuestes schnelles Reasoning-Modell)</option>
+                  <option value="o1-mini">o1-mini (Schnelles Reasoning-Modell)</option>
+                  <option value="o1">o1 (Leistungsstarkes Reasoning-Modell)</option>
                 </optgroup>
                 <optgroup label="Anthropic Claude (Whisper benötigt)">
                   <option value="claude-3-5-sonnet-latest">Claude 3.5 Sonnet (Herausragender deutscher Schreibstil)</option>
                   <option value="claude-3-5-haiku-latest">Claude 3.5 Haiku (Schnell & effizient)</option>
                 </optgroup>
-                <optgroup label="OpenRouter (Whisper benötigt - DeepSeek & Open Source)">
-                  <option value="deepseek/deepseek-chat">DeepSeek V3 (Leistungsstark & preiswert)</option>
-                  <option value="meta-llama/llama-3.1-70b-instruct">Llama 3.1 70B (Ausgewogenes Open Source Modell)</option>
-                  <option value="meta-llama/llama-3.1-405b-instruct">Llama 3.1 405B (Maximales Open Source Modell)</option>
+                <optgroup label="OpenRouter (Whisper benötigt - DeepSeek, Llama & Qwen)">
+                  <option value="deepseek/deepseek-chat">DeepSeek V3 (Leistungsstark & extrem günstig)</option>
+                  <option value="deepseek/deepseek-reasoner">DeepSeek R1 (Reasoning-Modell, DeepSeek-R1)</option>
+                  <option value="meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B (Neuestes Llama-Modell)</option>
+                  <option value="qwen/qwen-2.5-72b-instruct">Qwen 2.5 72B (Herausragendes chinesisches Open Source Modell)</option>
                 </optgroup>
               </select>
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
