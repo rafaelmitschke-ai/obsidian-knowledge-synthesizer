@@ -2116,6 +2116,14 @@ app.post('/api/graph', (req, res) => {
       const relativePath = path.relative(resolvedVaultPath, filePath).replace(/\\/g, '/');
       const noteName = path.basename(filePath, '.md');
       
+      let mtime = Date.now();
+      try {
+        const stat = fs.statSync(filePath);
+        mtime = stat.mtimeMs;
+      } catch (e) {
+        // ignore
+      }
+
       // Parse tags from frontmatter
       let tags = [];
       try {
@@ -2149,7 +2157,8 @@ app.post('/api/graph', (req, res) => {
         label: noteName,
         relativePath: relativePath,
         exists: true,
-        tags: tags
+        tags: tags,
+        mtime: mtime
       });
     });
 
@@ -2204,7 +2213,8 @@ app.post('/api/graph', (req, res) => {
                 id: resolvedTarget,
                 label: resolvedTarget,
                 relativePath: null,
-                exists: false
+                exists: false,
+                mtime: Date.now()
               });
             }
           }

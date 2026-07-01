@@ -554,7 +554,7 @@ const getFolderOrTagColor = (node) => {
       } else if (tagLower.includes('ressource') || tagLower.includes('source') || tagLower.includes('quelle')) {
         return '#eab308'; // Yellow/Amber
       } else if (tagLower.includes('archiv') || tagLower.includes('archive') || tagLower.includes('done')) {
-        return '#64748b'; // Muted Slate
+return '#64748b'; // Muted Slate
       }
     }
   }
@@ -569,8 +569,20 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
   
   const [selectedNode, setSelectedNode] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [dateFilter, setDateFilter] = useState('all');
+  const [showSuggestions, setShowSuggestions] = useState(false);
   const [graphRenderTrigger, setGraphRenderTrigger] = useState(0);
   const forceUpdate = () => setGraphRenderTrigger(prev => prev + 1);
+
+  const isNodeVisible = (node) => {
+    if (dateFilter === 'all') return true;
+    if (!node.exists) return true; // Unresolved notes stay visible
+    if (!node.mtime) return true; // Fallback
+    
+    const diffMs = Date.now() - node.mtime;
+    const days = diffMs / (1000 * 60 * 60 * 24);
+    return days <= parseInt(dateFilter);
+  };
 
   const stateRef = useRef({
     nodes: [],
@@ -585,6 +597,20 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
     targetZoom: 1,
     isAnimatingCamera: false
   });
+
+  const suggestions = searchQuery.trim()
+    ? stateRef.current.nodes.filter(n => isNodeVisible(n) && n.id.toLowerCase().includes(searchQuery.toLowerCase()) && n.id.toLowerCase() !== searchQuery.toLowerCase()).slice(0, 5)
+    : [];
+
+  useEffect(() => {
+    const handleOutsideClick = (e) => {
+      if (e.target && !e.target.closest('.graph-container')) {
+        setShowSuggestions(false);
+      }
+    };
+    window.addEventListener('click', handleOutsideClick);
+    return () => window.removeEventListener('click', handleOutsideClick);
+  }, []);
 
   useEffect(() => {
     const currentState = stateRef.current;
@@ -654,6 +680,16 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
       const { nodes, links, draggedNode } = state;
       if (nodes.length === 0) return;
 
+      const visibleNodes = nodes.filter(isNodeVisible);
+      const visibleNodeSet = new Set(visibleNodes.map(n => n.id));
+      const visibleLinks = links.filter(l => {
+        const sId = typeof l.source === 'object' ? l.source.id : l.source;
+        const tId = typeof l.target === 'object' ? l.target.id : l.target;
+        return visibleNodeSet.has(sId) && visibleNodeSet.has(tId);
+      });
+
+      if (visibleNodes.length === 0) return;
+
       const w = canvas.width;
       const h = canvas.height;
       const centerX = w / 2;
@@ -667,31 +703,30 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
       const gravity = 0.008;
       const friction = 0.82; // 18% energy loss per frame
 
-      // 1. Repulsion (with softening factor to prevent infinite close-range forces)
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const dx = nodes[j].x - nodes[i].x;
-          const dy = nodes[j].y - nodes[i].y;
+      // 1. Repulsion
+      for (let i = 0; i < visibleNodes.length; i++) {
+        for (let j = i + 1; j < visibleNodes.length; j++) {
+          const dx = visibleNodes[j].x - visibleNodes[i].x;
+          const dy = visibleNodes[j].y - visibleNodes[i].y;
           const distSq = dx * dx + dy * dy || 1;
           const dist = Math.sqrt(distSq);
           if (dist < 300) {
-            // Softening factor (+300) prevents forces from shooting to infinity
             const force = repellingForce / (distSq + 300);
             const fx = (dx / dist) * force;
             const fy = (dy / dist) * force;
-            nodes[i].vx -= fx;
-            nodes[i].vy -= fy;
-            nodes[j].vx += fx;
-            nodes[j].vy += fy;
+            visibleNodes[i].vx -= fx;
+            visibleNodes[i].vy -= fy;
+            visibleNodes[j].vx += fx;
+            visibleNodes[j].vy += fy;
           }
         }
       }
 
       const nodeMap = {};
-      nodes.forEach(n => { nodeMap[n.id] = n; });
+      visibleNodes.forEach(n => { nodeMap[n.id] = n; });
 
       // 2. Attraction along links
-      links.forEach(link => {
+      visibleLinks.forEach(link => {
         const sourceNode = nodeMap[link.source];
         const targetNode = nodeMap[link.target];
         if (sourceNode && targetNode) {
@@ -708,8 +743,8 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
         }
       });
 
-      // 3. Gravity and Position Updates with Clamped Speeds
-      nodes.forEach(node => {
+      // 3. Gravity and Position Updates
+      visibleNodes.forEach(node => {
         const dx = centerX - node.x;
         const dy = centerY - node.y;
         node.vx += dx * gravity;
@@ -719,7 +754,6 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
           node.vx = 0;
           node.vy = 0;
         } else {
-          // Clamp velocity to prevent high-speed escape (fireworks)
           const speed = Math.sqrt(node.vx * node.vx + node.vy * node.vy) || 1;
           if (speed > maxSpeed) {
             node.vx = (node.vx / speed) * maxSpeed;
@@ -739,19 +773,27 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
       const state = stateRef.current;
       const { nodes, links } = state;
 
+      const visibleNodes = nodes.filter(isNodeVisible);
+      const visibleNodeSet = new Set(visibleNodes.map(n => n.id));
+      const visibleLinks = links.filter(l => {
+        const sId = typeof l.source === 'object' ? l.source.id : l.source;
+        const tId = typeof l.target === 'object' ? l.target.id : l.target;
+        return visibleNodeSet.has(sId) && visibleNodeSet.has(tId);
+      });
+
       ctx.save();
       ctx.translate(state.pan.x, state.pan.y);
       ctx.scale(state.zoom, state.zoom);
 
       const nodeMap = {};
-      nodes.forEach(n => { nodeMap[n.id] = n; });
+      visibleNodes.forEach(n => { nodeMap[n.id] = n; });
 
       const focusNodeId = selectedNode?.id || activeNoteTitle;
       const hasFocus = !!focusNodeId;
       const neighbors = new Set();
       if (hasFocus) {
         neighbors.add(focusNodeId);
-        links.forEach(link => {
+        visibleLinks.forEach(link => {
           const sId = typeof link.source === 'object' ? link.source.id : link.source;
           const tId = typeof link.target === 'object' ? link.target.id : link.target;
           if (sId === focusNodeId) {
@@ -762,7 +804,7 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
         });
       }
 
-      links.forEach(link => {
+      visibleLinks.forEach(link => {
         const sourceNode = nodeMap[link.source];
         const targetNode = nodeMap[link.target];
         if (sourceNode && targetNode) {
@@ -771,7 +813,6 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
           
           const isLinkFocused = !hasFocus || (sId === focusNodeId || tId === focusNodeId);
           
-          // Calculate intersection with target node boundary
           const isTargetCurrent = targetNode.id === activeNoteTitle;
           const isTargetSelected = selectedNode && selectedNode.id === targetNode.id;
           const targetRadius = isTargetCurrent ? 9 : (isTargetSelected ? 8 : 5);
@@ -782,12 +823,10 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
           const ux = dx / dist;
           const uy = dy / dist;
           
-          // Arrow tip position at the target node boundary
           const gap = 3;
           const arrowX = targetNode.x - ux * (targetRadius + gap);
           const arrowY = targetNode.y - uy * (targetRadius + gap);
           
-          // Line
           ctx.beginPath();
           ctx.moveTo(sourceNode.x, sourceNode.y);
           ctx.lineTo(arrowX, arrowY);
@@ -795,10 +834,9 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
           ctx.strokeStyle = isLinkFocused ? 'rgba(99, 102, 241, 0.55)' : 'rgba(99, 102, 241, 0.08)';
           ctx.stroke();
           
-          // Arrowhead trigonometry
           const angle = Math.atan2(dy, dx);
           const arrowSize = 6;
-          const arrowAngle = Math.PI / 6; // 30 degrees
+          const arrowAngle = Math.PI / 6;
           
           const xLeft = arrowX - arrowSize * Math.cos(angle - arrowAngle);
           const yLeft = arrowY - arrowSize * Math.sin(angle - arrowAngle);
@@ -815,7 +853,7 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
         }
       });
 
-      nodes.forEach(node => {
+      visibleNodes.forEach(node => {
         const isCurrent = node.id === activeNoteTitle;
         const isSelected = selectedNode && selectedNode.id === node.id;
         const matchesFilter = searchQuery ? node.id.toLowerCase().includes(searchQuery.toLowerCase()) : false;
@@ -827,7 +865,6 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
         ctx.save();
         ctx.globalAlpha = isFocused ? 1.0 : 0.15;
 
-        // Draw node circle
         ctx.beginPath();
         ctx.arc(node.x, node.y, radius, 0, Math.PI * 2);
 
@@ -837,7 +874,6 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
           ctx.shadowBlur = 15;
           ctx.fill();
           
-          // Gold outer ring for active node
           ctx.beginPath();
           ctx.arc(node.x, node.y, radius + 2, 0, Math.PI * 2);
           ctx.strokeStyle = '#facc15';
@@ -854,7 +890,6 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
           ctx.shadowBlur = 12;
           ctx.fill();
           
-          // White outer ring for selected node
           ctx.beginPath();
           ctx.arc(node.x, node.y, radius + 2, 0, Math.PI * 2);
           ctx.strokeStyle = '#ffffff';
@@ -866,7 +901,6 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
           ctx.fill();
         }
 
-        // Handle non-existent links/notes with dotted outline
         if (!node.exists) {
           ctx.beginPath();
           ctx.arc(node.x, node.y, radius + 1, 0, Math.PI * 2);
@@ -877,7 +911,6 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
           ctx.setLineDash([]);
         }
 
-        // Draw node labels
         if (state.zoom > 0.4 || isSelected || isCurrent || matchesFilter) {
           ctx.font = isCurrent || isSelected || matchesFilter ? 'bold 11px Inter, system-ui' : '9px Inter, system-ui';
           ctx.fillStyle = isCurrent ? '#facc15' : (matchesFilter ? '#facc15' : (isSelected ? '#fff' : 'rgba(255, 255, 255, 0.75)'));
@@ -894,30 +927,26 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
     const tick = () => {
       const state = stateRef.current;
       
-      // Update camera animation
       if (state.isAnimatingCamera) {
-        // Track the focused node if one is active
         const focusNodeId = selectedNode?.id || activeNoteTitle;
-        const focusNode = state.nodes.find(n => n.id === focusNodeId);
-        if (focusNode) {
+        const targetNode = state.nodes.find(n => n.id === focusNodeId);
+        if (targetNode) {
           const w = canvas.width;
           const h = canvas.height;
-          state.targetPan.x = w / 2 - focusNode.x * state.targetZoom;
-          state.targetPan.y = h / 2 - focusNode.y * state.targetZoom;
+          state.targetPan = {
+            x: w / 2 - targetNode.x * state.targetZoom,
+            y: h / 2 - targetNode.y * state.targetZoom
+          };
         }
 
-        // Interpolation
-        const lerpFactor = 0.08;
-        state.pan.x += (state.targetPan.x - state.pan.x) * lerpFactor;
-        state.pan.y += (state.targetPan.y - state.pan.y) * lerpFactor;
-        state.zoom += (state.targetZoom - state.zoom) * lerpFactor;
+        state.zoom += (state.targetZoom - state.zoom) * 0.08;
+        state.pan.x += (state.targetPan.x - state.pan.x) * 0.08;
+        state.pan.y += (state.targetPan.y - state.pan.y) * 0.08;
 
-        // Stop animating when close enough
-        const panDistSq = (state.targetPan.x - state.pan.x) ** 2 + (state.targetPan.y - state.pan.y) ** 2;
-        const zoomDist = Math.abs(state.targetZoom - state.zoom);
-        if (panDistSq < 0.01 && zoomDist < 0.001) {
-          state.pan.x = state.targetPan.x;
-          state.pan.y = state.targetPan.y;
+        const panDiff = Math.hypot(state.targetPan.x - state.pan.x, state.targetPan.y - state.pan.y);
+        const zoomDiff = Math.abs(state.targetZoom - state.zoom);
+        if (panDiff < 0.5 && zoomDiff < 0.005) {
+          state.pan = { ...state.targetPan };
           state.zoom = state.targetZoom;
           state.isAnimatingCamera = false;
         }
@@ -927,23 +956,28 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
       draw();
       animationId = requestAnimationFrame(tick);
     };
-    tick();
+
+    animationId = requestAnimationFrame(tick);
 
     return () => {
-      window.removeEventListener('resize', resizeCanvas);
       cancelAnimationFrame(animationId);
+      window.removeEventListener('resize', resizeCanvas);
     };
-  }, [selectedNode, searchQuery, activeNoteTitle, data]);
+  }, [data, selectedNode, activeNoteTitle, searchQuery, dateFilter]);
 
   const getCanvasCoords = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0 };
     const rect = canvas.getBoundingClientRect();
-    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    if (e.touches && e.touches.length > 0) {
+      return {
+        x: e.touches[0].clientX - rect.left,
+        y: e.touches[0].clientY - rect.top
+      };
+    }
     return {
-      x: clientX - rect.left,
-      y: clientY - rect.top
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top
     };
   };
 
@@ -966,6 +1000,7 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
     
     for (let i = 0; i < state.nodes.length; i++) {
       const n = state.nodes[i];
+      if (!isNodeVisible(n)) continue;
       const dx = n.x - simCoords.x;
       const dy = n.y - simCoords.y;
       if (dx * dx + dy * dy < clickRadius * clickRadius) {
@@ -987,19 +1022,17 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
   };
 
   const handleMouseMove = (e) => {
+    if (e.touches && e.touches.length > 1) return;
     const coords = getCanvasCoords(e);
-    const simCoords = getSimCoords(coords);
     const state = stateRef.current;
-    state.mousePos = coords;
 
     if (state.draggedNode) {
+      const simCoords = getSimCoords(coords);
       state.draggedNode.x = simCoords.x;
       state.draggedNode.y = simCoords.y;
     } else if (state.isPanning) {
-      state.pan = {
-        x: coords.x - state.panStart.x,
-        y: coords.y - state.panStart.y
-      };
+      state.pan.x = coords.x - state.panStart.x;
+      state.pan.y = coords.y - state.panStart.y;
     }
   };
 
@@ -1014,16 +1047,11 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
     const state = stateRef.current;
     state.isAnimatingCamera = false;
     
+    const zoomFactor = 1.15;
+    const nextZoom = e.deltaY < 0 ? state.zoom * zoomFactor : state.zoom / zoomFactor;
+    const newZoom = Math.max(0.15, Math.min(nextZoom, 5));
+    
     const coords = getCanvasCoords(e);
-    const zoomFactor = 1.1;
-    let newZoom = state.zoom;
-
-    if (e.deltaY < 0) {
-      newZoom = Math.min(newZoom * zoomFactor, 5);
-    } else {
-      newZoom = Math.max(newZoom / zoomFactor, 0.15);
-    }
-
     const dx = coords.x - state.pan.x;
     const dy = coords.y - state.pan.y;
     const newPan = {
@@ -1036,9 +1064,9 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
   };
 
   const touchStartRef = useRef({ distance: 0, zoom: 1, pan: { x: 0, y: 0 } });
+
   const handleTouchStart = (e) => {
     const state = stateRef.current;
-    state.isAnimatingCamera = false;
     if (e.touches.length === 2) {
       e.preventDefault();
       const t1 = e.touches[0];
@@ -1092,24 +1120,99 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
   return (
     <div ref={containerRef} className="graph-container" style={{ position: 'relative', width: '100%', height: '500px', background: 'rgba(10,12,24,0.3)', borderRadius: '12px', border: '1px solid var(--border-glass)', overflow: 'hidden' }}>
       
-      <div style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, display: 'flex', gap: '8px', width: 'calc(100% - 24px)', maxWidth: '360px' }}>
-        <input 
-          type="text" 
-          className="text-input"
-          style={{ height: '36px', fontSize: '0.8rem', padding: '0 12px' }}
-          placeholder="Filtere Notizen im Graph..." 
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-        />
-        {searchQuery && (
-          <button 
-            className="btn btn-secondary" 
-            style={{ padding: '0 10px', height: '36px', minWidth: '40px' }} 
-            onClick={() => setSearchQuery('')}
+      <div className="graph-controls-left" style={{ position: 'absolute', top: '12px', left: '12px', zIndex: 10, display: 'flex', flexDirection: 'column', gap: '4px', width: 'calc(100% - 24px)', maxWidth: '280px' }}>
+        <div style={{ display: 'flex', gap: '6px' }}>
+          <input 
+            type="text" 
+            className="text-input"
+            style={{ height: '36px', fontSize: '0.8rem', padding: '0 12px', flex: 1 }}
+            placeholder="Filtere Notizen im Graph..." 
+            value={searchQuery}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setShowSuggestions(true);
+            }}
+            onFocus={() => setShowSuggestions(true)}
+          />
+          {searchQuery && (
+            <button 
+              className="btn btn-secondary" 
+              style={{ padding: '0 10px', height: '36px', minWidth: '40px' }} 
+              onClick={() => {
+                setSearchQuery('');
+                setShowSuggestions(false);
+              }}
+            >
+              ×
+            </button>
+          )}
+        </div>
+        
+        {showSuggestions && suggestions.length > 0 && (
+          <div 
+            className="glass-panel" 
+            style={{ 
+              background: 'rgba(15, 23, 42, 0.95)', 
+              border: '1px solid var(--border-glass-glow)', 
+              borderRadius: '6px', 
+              padding: '4px 0', 
+              maxHeight: '180px', 
+              overflowY: 'auto',
+              boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+              textAlign: 'left'
+            }}
           >
-            ×
-          </button>
+            {suggestions.map(n => (
+              <div
+                key={n.id}
+                style={{
+                  padding: '8px 12px',
+                  fontSize: '0.75rem',
+                  color: 'var(--text-primary)',
+                  cursor: 'pointer',
+                  transition: 'background 0.2s ease',
+                  textAlign: 'left'
+                }}
+                onMouseEnter={(e) => e.target.style.background = 'rgba(99, 102, 241, 0.15)'}
+                onMouseLeave={(e) => e.target.style.background = 'transparent'}
+                onClick={() => {
+                  setSearchQuery(n.id);
+                  focusOnNode(n.id);
+                  setSelectedNode(n);
+                  onNodeSelect(n);
+                  setShowSuggestions(false);
+                }}
+              >
+                📝 {n.id}
+              </div>
+            ))}
+          </div>
         )}
+      </div>
+
+      <div className="graph-controls-right" style={{ position: 'absolute', top: '12px', right: '12px', zIndex: 10 }}>
+        <select
+          className="text-input"
+          style={{ 
+            height: '36px', 
+            fontSize: '0.8rem', 
+            padding: '0 8px', 
+            width: '150px', 
+            background: 'rgba(15,23,42,0.85)', 
+            border: '1px solid var(--border-glass-glow)', 
+            color: 'var(--text-primary)', 
+            cursor: 'pointer',
+            borderRadius: '6px'
+          }}
+          value={dateFilter}
+          onChange={(e) => setDateFilter(e.target.value)}
+        >
+          <option value="all">🕒 Alle Notizen</option>
+          <option value="1">🕒 Geändert: Heute</option>
+          <option value="7">🕒 Geändert: 7 Tage</option>
+          <option value="30">🕒 Geändert: 30 Tage</option>
+          <option value="90">🕒 Geändert: 90 Tage</option>
+        </select>
       </div>
 
       <canvas
@@ -1126,12 +1229,11 @@ const GraphVisualizer = ({ data, onNodeSelect, activeNoteTitle }) => {
       />
 
       <div style={{ position: 'absolute', bottom: '12px', right: '12px', pointerEvents: 'none', fontSize: '0.7rem', color: 'var(--text-muted)', background: 'rgba(15,23,42,0.6)', padding: '4px 8px', borderRadius: '4px' }}>
-        🖱 Mausrad: Zoom | 👆 Ziehen: Pan
+        Mausrad: Zoom | Ziehen: Pan
       </div>
     </div>
   );
 };
-
 export default function App() {
   const [activeTab, setActiveTab] = useState('youtube'); // 'youtube' | 'text' | 'audio' | 'queue'
   const fileInputRef = useRef(null);
@@ -1156,6 +1258,10 @@ export default function App() {
   const [isVisionPdf, setIsVisionPdf] = useState(false);
   const [pdfFilePath, setPdfFilePath] = useState('');
   const [isUploadingPdfFile, setIsUploadingPdfFile] = useState(false);
+
+  // Multi-Note States
+  const [isMultiNote, setIsMultiNote] = useState(false);
+  const [generatedMultiNotes, setGeneratedMultiNotes] = useState([]);
 
   // Bulk Queue Input State
   const [queue, setQueue] = useState([]);
@@ -2004,6 +2110,87 @@ ${contentToAnalyze}
         }
       }
 
+      setGeneratedMultiNotes([]);
+
+      if (isMultiNote && chunks.length > 1) {
+        const results = [];
+        const listOfNotes = [];
+        const baseTitle = textTitle || 'Wissenssynthese';
+
+        setIsLoading(true);
+        setCurrentStep(2); // AI Analysis
+
+        try {
+          for (let i = 0; i < chunks.length; i++) {
+            const chunk = chunks[i];
+            setSynthesisProgress(`Synthetisiere Teil ${i + 1} von ${chunks.length}...`);
+
+            const chunkRes = await runAiSynthesis(chunk.text, sourceInfo, noteType);
+            results.push(chunkRes);
+
+            const chapterTitle = `${baseTitle} - Teil ${i + 1}`;
+            const chunkResWithTitle = { ...chunkRes, title: chapterTitle };
+
+            // Navigation metadata
+            let navigationMd = `\n\n---\n## 🗺️ Navigation\n\n`;
+            if (i > 0) {
+              navigationMd += `← [[${baseTitle} - Teil ${i}]] | `;
+            }
+            navigationMd += `🏛️ [[${baseTitle}]]`;
+            if (i < chunks.length - 1) {
+              navigationMd += ` | [[${baseTitle} - Teil ${i + 2}]] →`;
+            }
+
+            const compiledChapterMd = compileTemplate(chunkResWithTitle, sourceInfo, noteType) + navigationMd;
+
+            listOfNotes.push({
+              title: chapterTitle,
+              markdown: compiledChapterMd,
+              tags: chunkRes.tags || []
+            });
+          }
+
+          setSynthesisProgress('Generiere Hauptübersichtsseite (Index)...');
+          const mergedRes = mergeSynthesises(results, baseTitle);
+
+          // Build Index Table of Contents
+          let tocContent = `## 📚 Kapitelverzeichnis (Einzelkapitel)\n\nHier sind die detaillierten Kapitelnotizen für dieses Buch:\n\n`;
+          for (let i = 0; i < chunks.length; i++) {
+            const chapterTitle = `${baseTitle} - Teil ${i + 1}`;
+            const chapterSummary = results[i].summary || 'Zusammenfassung der Kapitelinhalte.';
+            tocContent += `- **[[${chapterTitle}]]**\n  > ${chapterSummary}\n\n`;
+          }
+
+          mergedRes.content = tocContent;
+          const compiledMainMd = compileTemplate(mergedRes, sourceInfo, noteType);
+
+          const finalMultiNotes = [
+            {
+              title: baseTitle,
+              markdown: compiledMainMd,
+              tags: mergedRes.tags || []
+            },
+            ...listOfNotes
+          ];
+
+          setGeneratedMultiNotes(finalMultiNotes);
+          setStructuredData(mergedRes);
+          setGeneratedMarkdown(compiledMainMd);
+          setGeneratedTitle(baseTitle);
+          setCurrentStep(3);
+          triggerToast('Erfolgreich kapitelweise synthetisiert!', 'success');
+        } catch (err) {
+          console.error(err);
+          setErrorMsg(err.message);
+          setCurrentStep(0);
+          triggerToast('Synthese fehlgeschlagen.', 'error');
+        } finally {
+          setIsLoading(false);
+          setSynthesisProgress('');
+        }
+        return;
+      }
+
       setCurrentStep(2); // AI Analysis
       let aiResponse;
 
@@ -2198,26 +2385,49 @@ ${contentToAnalyze}
     }
 
     try {
-      // Run smart folder routing logic based on generated tags
-      const targetSubfolder = resolveSaveFolder(structuredData?.tags || []);
+      if (generatedMultiNotes && generatedMultiNotes.length > 0) {
+        triggerToast(`Speichere ${generatedMultiNotes.length} verknüpfte Notizen im Vault...`, 'info');
+        
+        for (const note of generatedMultiNotes) {
+          const targetSubfolder = resolveSaveFolder(note.tags || []);
+          const res = await fetch(`${API_BASE}/api/save`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              vaultPath: settings.vaultPath,
+              folder: targetSubfolder,
+              fileName: note.title,
+              content: note.markdown,
+              pdfPath: settings.pdfPath
+            })
+          });
+          const data = await res.json();
+          if (!res.ok || data.error) throw new Error(data.error || `Fehler beim Speichern von: ${note.title}`);
+        }
+        
+        triggerToast(`${generatedMultiNotes.length} verknüpfte Notizen erfolgreich im Vault gespeichert!`, 'success');
+      } else {
+        // Run smart folder routing logic based on generated tags
+        const targetSubfolder = resolveSaveFolder(structuredData?.tags || []);
 
-      const res = await fetch(`${API_BASE}/api/save`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          vaultPath: settings.vaultPath,
-          folder: targetSubfolder,
-          fileName: generatedTitle,
-          content: generatedMarkdown,
-          pdfPath: settings.pdfPath
-        })
-      });
+        const res = await fetch(`${API_BASE}/api/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vaultPath: settings.vaultPath,
+            folder: targetSubfolder,
+            fileName: generatedTitle,
+            content: generatedMarkdown,
+            pdfPath: settings.pdfPath
+          })
+        });
 
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data.error || 'Fehler beim Speichern.');
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || 'Fehler beim Speichern.');
 
-      const cleanFolderName = targetSubfolder.split(/[\\/]/).pop();
-      triggerToast(`Gespeichert in: .../${cleanFolderName}/${generatedTitle}.md`, 'success');
+        const cleanFolderName = targetSubfolder.split(/[\\/]/).pop();
+        triggerToast(`Gespeichert in: .../${cleanFolderName}/${generatedTitle}.md`, 'success');
+      }
       
       // Refresh notes list
       checkVaultConnection(settings.vaultPath, settings.folder);
@@ -3325,30 +3535,38 @@ ${contentToAnalyze}
                     gap: '12px',
                     padding: '12px 16px',
                     borderRadius: '8px',
-                    background: 'rgba(255, 255, 255, 0.02)',
+                    background: isMultiNote ? 'rgba(255, 255, 255, 0.01)' : 'rgba(255, 255, 255, 0.02)',
                     border: '1px solid var(--border-glass-glow)',
-                    cursor: 'pointer',
+                    cursor: isMultiNote ? 'not-allowed' : 'pointer',
+                    opacity: isMultiNote ? 0.5 : 1,
                     userSelect: 'none',
                     transition: 'all 0.2s ease'
                   }}
                   onClick={() => {
-                    setIsVisionPdf(!isVisionPdf);
-                    setPdfFilePath('');
-                    setRawText('');
+                    if (!isMultiNote) {
+                      setIsVisionPdf(!isVisionPdf);
+                      setPdfFilePath('');
+                      setRawText('');
+                    }
                   }}
                   onMouseEnter={(e) => {
-                    e.currentTarget.style.borderColor = 'rgba(99, 102, 241, 0.3)';
-                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                    if (!isMultiNote) {
+                      e.currentTarget.style.borderColor = 'rgba(99, 102, 241, 0.3)';
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                    }
                   }}
                   onMouseLeave={(e) => {
-                    e.currentTarget.style.borderColor = 'var(--border-glass-glow)';
-                    e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                    if (!isMultiNote) {
+                      e.currentTarget.style.borderColor = 'var(--border-glass-glow)';
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                    }
                   }}
                 >
                   <input
                     type="checkbox"
                     id="isVisionPdfCheckbox"
                     checked={isVisionPdf}
+                    disabled={isMultiNote}
                     onChange={(e) => {
                       setIsVisionPdf(e.target.checked);
                       setPdfFilePath('');
@@ -3358,18 +3576,18 @@ ${contentToAnalyze}
                     style={{
                       width: '18px',
                       height: '18px',
-                      cursor: 'pointer',
+                      cursor: isMultiNote ? 'not-allowed' : 'pointer',
                       accentColor: 'var(--color-primary)',
                     }}
                   />
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', cursor: 'pointer' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', cursor: isMultiNote ? 'not-allowed' : 'pointer' }}>
                     <label 
                       htmlFor="isVisionPdfCheckbox" 
                       style={{ 
                         fontSize: '0.85rem', 
                         fontWeight: '600', 
                         color: 'var(--text-primary)',
-                        cursor: 'pointer',
+                        cursor: isMultiNote ? 'not-allowed' : 'pointer',
                         margin: 0
                       }}
                       onClick={(e) => e.stopPropagation()}
@@ -3377,7 +3595,81 @@ ${contentToAnalyze}
                       Als Bild/Grafik-PDF (Vision/OCR) verarbeiten
                     </label>
                     <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      Erfordert ein Gemini-Modell. Perfekt für gescannte Dokumente, Grafiken und Skizzen (wie NotebookLM).
+                      {isMultiNote 
+                        ? 'Nicht verfügbar bei Kapitelweise aufteilen.'
+                        : 'Erfordert ein Gemini-Modell. Perfekt für gescannte Dokumente, Grafiken und Skizzen (wie NotebookLM).'}
+                    </span>
+                  </div>
+                </div>
+
+                <div 
+                  className="form-group" 
+                  style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '12px',
+                    padding: '12px 16px',
+                    borderRadius: '8px',
+                    background: isVisionPdf ? 'rgba(255, 255, 255, 0.01)' : 'rgba(255, 255, 255, 0.02)',
+                    border: '1px solid var(--border-glass-glow)',
+                    cursor: isVisionPdf ? 'not-allowed' : 'pointer',
+                    opacity: isVisionPdf ? 0.5 : 1,
+                    userSelect: 'none',
+                    transition: 'all 0.2s ease',
+                    marginTop: '8px'
+                  }}
+                  onClick={() => {
+                    if (!isVisionPdf) {
+                      setIsMultiNote(!isMultiNote);
+                    }
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isVisionPdf) {
+                      e.currentTarget.style.borderColor = 'rgba(99, 102, 241, 0.3)';
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.04)';
+                    }
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isVisionPdf) {
+                      e.currentTarget.style.borderColor = 'var(--border-glass-glow)';
+                      e.currentTarget.style.background = 'rgba(255, 255, 255, 0.02)';
+                    }
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    id="isMultiNoteCheckbox"
+                    checked={isMultiNote}
+                    disabled={isVisionPdf}
+                    onChange={(e) => {
+                      setIsMultiNote(e.target.checked);
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    style={{
+                      width: '18px',
+                      height: '18px',
+                      cursor: isVisionPdf ? 'not-allowed' : 'pointer',
+                      accentColor: 'var(--color-primary)',
+                    }}
+                  />
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', cursor: isVisionPdf ? 'not-allowed' : 'pointer' }}>
+                    <label 
+                      htmlFor="isMultiNoteCheckbox" 
+                      style={{ 
+                        fontSize: '0.85rem', 
+                        fontWeight: '600', 
+                        color: 'var(--text-primary)',
+                        cursor: isVisionPdf ? 'not-allowed' : 'pointer',
+                        margin: 0
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      In verknüpfte Kapitel-Einzelnotizen aufteilen (Multi-Note)
+                    </label>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      {isVisionPdf 
+                        ? 'Nicht verfügbar bei der Bild/Grafik-PDF-Vision.'
+                        : 'Erstellt eine zentrale Übersichtsseite (Index) und verlinkt alle Kapitel als separate Notizen in deinem Vault.'}
                     </span>
                   </div>
                 </div>
