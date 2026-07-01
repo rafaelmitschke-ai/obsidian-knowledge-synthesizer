@@ -1263,6 +1263,11 @@ export default function App() {
   const [isMultiNote, setIsMultiNote] = useState(false);
   const [generatedMultiNotes, setGeneratedMultiNotes] = useState([]);
 
+  // Two-Way Sync States
+  const [activeLoadedFileName, setActiveLoadedFileName] = useState('');
+  const [isEditorDirty, setIsEditorDirty] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('synced'); // 'synced' | 'saving' | 'conflict'
+
   // Bulk Queue Input State
   const [queue, setQueue] = useState([]);
   const [queueType, setQueueType] = useState('youtube');
@@ -1490,6 +1495,88 @@ export default function App() {
       setConnectionStatus('disconnected');
     }
   };
+
+  // Obsidian -> Aetheris: Watch file on disk for external edits
+  useEffect(() => {
+    if (!activeLoadedFileName || isLoading || syncStatus === 'saving') return;
+
+    const interval = setInterval(async () => {
+      try {
+        const readRes = await fetch(`${API_BASE}/api/read-note`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ 
+            vaultPath: settings.vaultPath, 
+            folder: settings.folder, 
+            fileName: activeLoadedFileName, 
+            isVaultRelative: true 
+          })
+        });
+        const readData = await readRes.json();
+        if (readData.success) {
+          if (readData.content !== generatedMarkdown) {
+            if (!isEditorDirty) {
+              setGeneratedMarkdown(readData.content);
+              triggerToast('Notiz automatisch aus Obsidian aktualisiert.', 'info');
+            } else {
+              if (syncStatus !== 'conflict') {
+                setSyncStatus('conflict');
+                triggerToast('⚠️ Konflikt: Notiz wurde in Obsidian extern geändert.', 'warning');
+              }
+            }
+          } else {
+            if (syncStatus === 'conflict') {
+              setSyncStatus('synced');
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to poll check note status:', err);
+      }
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [activeLoadedFileName, generatedMarkdown, isEditorDirty, syncStatus, isLoading, settings.vaultPath, settings.folder, API_BASE]);
+
+  // Aetheris -> Obsidian: Debounced Auto-Save
+  useEffect(() => {
+    if (!activeLoadedFileName || !isEditorDirty || syncStatus === 'conflict') return;
+
+    const delayDebounce = setTimeout(async () => {
+      setSyncStatus('saving');
+      try {
+        const parts = activeLoadedFileName.split('/');
+        const fileNameWithExt = parts.pop();
+        const folderPath = parts.join('/');
+        const fileNameNoExt = fileNameWithExt.replace(/\.md$/, '');
+
+        const res = await fetch(`${API_BASE}/api/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            vaultPath: settings.vaultPath,
+            folder: folderPath,
+            fileName: fileNameNoExt,
+            content: generatedMarkdown,
+            pdfPath: settings.pdfPath
+          })
+        });
+
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || 'Auto-Save fehlgeschlagen.');
+
+        setIsEditorDirty(false);
+        setSyncStatus('synced');
+        checkVaultConnection(settings.vaultPath, settings.folder);
+      } catch (err) {
+        console.error('Auto-save failed:', err);
+        setSyncStatus('synced');
+        triggerToast('Auto-Speichern fehlgeschlagen.', 'error');
+      }
+    }, 2500);
+
+    return () => clearTimeout(delayDebounce);
+  }, [generatedMarkdown, activeLoadedFileName, isEditorDirty, syncStatus, settings.vaultPath, settings.pdfPath, settings.folder, API_BASE]);
 
   // Compile Markdown Note from Structured AI JSON & User Custom Template
   const compileTemplate = (aiData, sourceInfo, noteType) => {
@@ -2388,7 +2475,9 @@ ${contentToAnalyze}
       if (generatedMultiNotes && generatedMultiNotes.length > 0) {
         triggerToast(`Speichere ${generatedMultiNotes.length} verknüpfte Notizen im Vault...`, 'info');
         
-        for (const note of generatedMultiNotes) {
+        let indexRelativePath = '';
+        for (let idx = 0; idx < generatedMultiNotes.length; idx++) {
+          const note = generatedMultiNotes[idx];
           const targetSubfolder = resolveSaveFolder(note.tags || []);
           const res = await fetch(`${API_BASE}/api/save`, {
             method: 'POST',
@@ -2403,9 +2492,17 @@ ${contentToAnalyze}
           });
           const data = await res.json();
           if (!res.ok || data.error) throw new Error(data.error || `Fehler beim Speichern von: ${note.title}`);
+          if (idx === 0) {
+            indexRelativePath = targetSubfolder ? `${targetSubfolder}/${data.fileName}` : data.fileName;
+          }
         }
         
         triggerToast(`${generatedMultiNotes.length} verknüpfte Notizen erfolgreich im Vault gespeichert!`, 'success');
+        if (indexRelativePath) {
+          setActiveLoadedFileName(indexRelativePath);
+          setIsEditorDirty(false);
+          setSyncStatus('synced');
+        }
       } else {
         // Run smart folder routing logic based on generated tags
         const targetSubfolder = resolveSaveFolder(structuredData?.tags || []);
@@ -2427,6 +2524,11 @@ ${contentToAnalyze}
 
         const cleanFolderName = targetSubfolder.split(/[\\/]/).pop();
         triggerToast(`Gespeichert in: .../${cleanFolderName}/${generatedTitle}.md`, 'success');
+
+        const relativeFileName = targetSubfolder ? `${targetSubfolder}/${data.fileName}` : data.fileName;
+        setActiveLoadedFileName(relativeFileName);
+        setIsEditorDirty(false);
+        setSyncStatus('synced');
       }
       
       // Refresh notes list
@@ -2486,6 +2588,9 @@ ${contentToAnalyze}
         setGeneratedMarkdown(readData.content);
         const cleanTitle = fileName.split('/').pop().replace(/\.md$/, '');
         setGeneratedTitle(cleanTitle);
+        setActiveLoadedFileName(fileName);
+        setIsEditorDirty(false);
+        setSyncStatus('synced');
         
         // Mock structured data wrapper for loaded notes to enable study/graph views if possible
         // (Just parses a simple mock list from the file to satisfy previews)
@@ -4436,19 +4541,66 @@ ${contentToAnalyze}
               <div className="dual-workspace glass-panel">
                 {previewMode === 'editor' ? (
                   <div className="pane">
-                    <div className="pane-header">
+                    <div className="pane-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span className="pane-title">Raw Markdown Editor</span>
+                      {activeLoadedFileName && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ 
+                            fontSize: '0.72rem', 
+                            fontWeight: '600', 
+                            color: syncStatus === 'synced' ? '#10b981' : (syncStatus === 'saving' ? '#f59e0b' : '#ef4444')
+                          }}>
+                            {syncStatus === 'synced' && '🟢 Synchronisiert'}
+                            {syncStatus === 'saving' && '🔄 Speichert...'}
+                            {syncStatus === 'conflict' && '⚠️ Konflikt: In Obsidian geändert'}
+                          </span>
+                          {syncStatus === 'conflict' && (
+                            <button
+                              className="btn btn-secondary"
+                              style={{ height: '24px', padding: '0 8px', fontSize: '0.68rem', background: 'rgba(239, 68, 68, 0.1)', borderColor: 'rgba(239, 68, 68, 0.2)', color: '#f87171' }}
+                              onClick={() => handleLoadNoteContent(activeLoadedFileName, true)}
+                            >
+                              Obsidian-Version laden
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <textarea 
                       className="editor-textarea" 
                       value={generatedMarkdown} 
-                      onChange={(e) => setGeneratedMarkdown(e.target.value)}
+                      onChange={(e) => {
+                        setGeneratedMarkdown(e.target.value);
+                        setIsEditorDirty(true);
+                      }}
                     />
                   </div>
                 ) : (
                   <div className="pane">
-                    <div className="pane-header">
+                    <div className="pane-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span className="pane-title">Obsidian Rendered Note</span>
+                      {activeLoadedFileName && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ 
+                            fontSize: '0.72rem', 
+                            fontWeight: '600', 
+                            color: syncStatus === 'synced' ? '#10b981' : (syncStatus === 'saving' ? '#f59e0b' : '#ef4444')
+                          }}>
+                            {syncStatus === 'synced' && '🟢 Synchronisiert'}
+                            {syncStatus === 'saving' && '🔄 Speichert...'}
+                            {syncStatus === 'conflict' && '⚠️ Konflikt: In Obsidian geändert'}
+                          </span>
+                          {syncStatus === 'conflict' && (
+                            <button
+                              className="btn btn-secondary"
+                              style={{ height: '24px', padding: '0 8px', fontSize: '0.68rem', background: 'rgba(239, 68, 68, 0.1)', borderColor: 'rgba(239, 68, 68, 0.2)', color: '#f87171' }}
+                              onClick={() => handleLoadNoteContent(activeLoadedFileName, true)}
+                            >
+                              Obsidian-Version laden
+                            </button>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <div className="rendered-preview">
                       {renderObsidianMarkdown(generatedMarkdown)}
