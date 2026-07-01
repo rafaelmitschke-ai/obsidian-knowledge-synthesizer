@@ -1931,6 +1931,12 @@ ${contentToAnalyze}
     const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
     const allowed = ['.mp3', '.mpeg', '.wav', '.m4a', '.m4b', '.ogg', '.aac', '.flac'];
 
+    if (ext === '.aax') {
+      triggerToast('⚠️ Dies ist ein verschlüsseltes Audible-Hörbuch (.aax). Bitte nutze den Audible-Entschlüssler unten!', 'warning');
+      setShowDecrypter(true);
+      return;
+    }
+
     if (!allowed.includes(ext)) {
       triggerToast(`Ungültiges Audioformat: ${ext}. Unterstützte Formate: ${allowed.join(', ')}`, 'error');
       return;
@@ -3832,7 +3838,7 @@ ${contentToAnalyze}
                     type="file" 
                     ref={audioFileInputRef} 
                     style={{ display: 'none' }} 
-                    accept=".mp3,.wav,.m4a,.m4b,.ogg,.aac,.flac" 
+                    accept=".mp3,.wav,.m4a,.m4b,.ogg,.aac,.flac,.aax" 
                     onChange={(e) => handleAudioFileSelect(e)} 
                   />
                   {isUploadingAudioFile ? (
@@ -3847,7 +3853,7 @@ ${contentToAnalyze}
                         Zieh eine Audio-Datei hierher oder klicke zum Auswählen
                       </span>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '4px' }}>
-                        Unterstützt MP3, WAV, M4A, M4B, FLAC (max. 500MB)
+                        Unterstützt MP3, WAV, M4A, M4B, FLAC, AAX (max. 500MB)
                       </div>
                     </div>
                   )}
@@ -3916,6 +3922,27 @@ ${contentToAnalyze}
                           value={decryptPath}
                           onChange={(e) => setDecryptPath(e.target.value)}
                         />
+                        <input 
+                          type="file"
+                          id="decrypterFileInput"
+                          style={{ display: 'none' }}
+                          accept=".aax,.m4b"
+                          onChange={(e) => {
+                            if (e.target.files && e.target.files.length > 0) {
+                              const file = e.target.files[0];
+                              const absolutePath = file.path || file.name;
+                              setDecryptPath(absolutePath);
+                              triggerToast('Pfad aus Dateiauswahl übernommen!', 'success');
+                            }
+                          }}
+                        />
+                        <button 
+                          className="btn btn-secondary" 
+                          style={{ height: '36px', padding: '0 12px', fontSize: '0.8rem', minWidth: 'auto', whiteSpace: 'nowrap' }}
+                          onClick={() => document.getElementById('decrypterFileInput')?.click()}
+                        >
+                          📂 Datei wählen
+                        </button>
                         <button 
                           className="btn btn-secondary" 
                           style={{ height: '36px', padding: '0 12px', fontSize: '0.8rem', minWidth: 'auto', whiteSpace: 'nowrap' }}
@@ -4138,14 +4165,41 @@ ${contentToAnalyze}
                   
                   <div className="form-group" style={{ margin: 0 }}>
                     <label className="form-label">Quelle (URL oder absoluter Pfad)</label>
-                    <input 
-                      type="text" 
-                      className="text-input" 
-                      style={{ height: '40px', padding: '8px 12px' }} 
-                      placeholder={queueType === 'youtube' ? 'https://www.youtube.com/watch?v=...' : 'C:\\path\\file.mp3 oder http://url.mp3'}
-                      value={queueInput}
-                      onChange={(e) => setQueueInput(e.target.value)}
-                    />
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <input 
+                        type="text" 
+                        className="text-input" 
+                        style={{ height: '40px', padding: '8px 12px', flex: 1 }} 
+                        placeholder={queueType === 'youtube' ? 'https://www.youtube.com/watch?v=...' : 'C:\\path\\file.mp3 oder http://url.mp3'}
+                        value={queueInput}
+                        onChange={(e) => setQueueInput(e.target.value)}
+                      />
+                      {queueType === 'audio' && (
+                        <>
+                          <input 
+                            type="file"
+                            id="queueFileInput"
+                            style={{ display: 'none' }}
+                            accept=".mp3,.wav,.m4a,.m4b,.ogg,.aac,.flac,.aax"
+                            onChange={(e) => {
+                              if (e.target.files && e.target.files.length > 0) {
+                                const file = e.target.files[0];
+                                const absolutePath = file.path || file.name;
+                                setQueueInput(absolutePath);
+                                triggerToast('Pfad aus Dateiauswahl übernommen!', 'success');
+                              }
+                            }}
+                          />
+                          <button 
+                            className="btn btn-secondary" 
+                            style={{ height: '40px', padding: '0 12px', fontSize: '0.8rem', minWidth: 'auto', whiteSpace: 'nowrap', border: '1px solid var(--border-glass-glow)' }}
+                            onClick={() => document.getElementById('queueFileInput')?.click()}
+                          >
+                            📂 Datei wählen
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
 
                   <button className="btn btn-secondary" style={{ height: '40px' }} onClick={handleAddToQueue}>
