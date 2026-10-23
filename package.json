@@ -1,7 +1,7 @@
 {
-  "name": "aetheris-root",
+  "name": "aetheris",
   "version": "1.0.0",
-  "description": "Obsidian Knowledge Synthesizer Root Workspace",
+  "description": "Aetheris - Obsidian Knowledge Synthesizer",
   "private": true,
   "main": "main.js",
   "type": "module",
@@ -10,11 +10,75 @@
     "install:frontend": "npm install --prefix frontend",
     "install:all": "npm install && npm run install:backend && npm run install:frontend",
     "dev": "concurrently \"npm run start --prefix backend\" \"npm run dev --prefix frontend\"",
-    "desktop": "cross-env NODE_ENV=development concurrently \"npm run dev\" \"electron .\""
+    "desktop": "cross-env NODE_ENV=development concurrently \"npm run dev\" \"electron .\"",
+    "build:frontend": "npm run build --prefix frontend",
+    "build:win": "npm run build:frontend && electron-builder --win",
+    "build:linux": "npm run build:frontend && electron-builder --linux",
+    "build:all": "npm run build:frontend && electron-builder --win --linux"
+  },
+  "build": {
+    "appId": "com.aetheris.synthesizer",
+    "productName": "Aetheris",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "main.js",
+      "backend/**/*",
+      "frontend/dist/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "linux": {
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "category": "Office"
+    }
   },
   "devDependencies": {
     "concurrently": "^9.1.0",
     "cross-env": "^10.1.0",
-    "electron": "^43.0.0"
+    "electron": "^43.0.0",
+    "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.1",
+    "cors": "^2.8.6",
+    "express": "^5.3.0",
+    "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.20.2",
+    "undici": "^8.12.3"
   }
 }

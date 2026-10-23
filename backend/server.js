@@ -2240,12 +2240,22 @@ app.post('/api/debug-log', (req, res) => {
   res.json({ success: true });
 });
 
+// Serve compiled frontend in production and for mobile PWA connections
+const distPath = path.resolve(__dirname, '../frontend/dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 
 app.listen(PORT, '0.0.0.0', () => {
   const localIp = getLocalIpAddress();
+  const hasDist = fs.existsSync(distPath);
   console.log(`\n======================================================`);
   console.log(`⚡ Aetheris Backend running on http://localhost:${PORT}`);
-  console.log(`📱 Mobile verknüpft! Öffne auf deinem Handy: http://${localIp}:5173`);
+  console.log(`📱 Mobile/PWA verknüpft! Öffne auf deinem iPhone: http://${localIp}:${hasDist ? PORT : 5173}`);
   console.log(`======================================================\n`);
 });
 

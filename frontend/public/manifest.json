@@ -1,29 +1,18 @@
 {
   "short_name": "Aetheris",
   "name": "Aetheris Obsidian Synthesizer",
-  "description": "YouTube und Text KI-Synthesizer verknüpft mit Obsidian Vault",
+  "description": "Multi-Source Knowledge Synthesizer für Obsidian",
   "icons": [
     {
-      "src": "vite.svg",
-      "sizes": "64x64",
-      "type": "image/svg+xml"
-    },
-    {
-      "src": "vite.svg",
-      "sizes": "192x192",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "vite.svg",
-      "sizes": "512x512",
+      "src": "/favicon.svg",
+      "sizes": "64x64 192x192 512x512",
       "type": "image/svg+xml",
       "purpose": "any maskable"
     }
   ],
   "start_url": "/",
-  "background_color": "#080b11",
-  "theme_color": "#6366f1",
+  "background_color": "#0a0c18",
+  "theme_color": "#0a0c18",
   "display": "standalone",
-  "orientation": "portrait"
+  "orientation": "any"
 }

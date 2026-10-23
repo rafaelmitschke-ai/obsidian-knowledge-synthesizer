@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import SettingsModal from './components/SettingsModal';
 
-const API_BASE = `http://${window.location.hostname}:5001`;
+const API_BASE = window.location.hostname ? `http://${window.location.hostname}:5001` : 'http://localhost:5001';
 
 const repairTruncatedJson = (jsonStr) => {
   let cleaned = jsonStr.trim();
